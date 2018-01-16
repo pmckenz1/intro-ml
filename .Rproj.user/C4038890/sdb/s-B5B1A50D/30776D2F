@@ -1,0 +1,21 @@
+{
+    "collab_server" : "",
+    "contents" : "library(devtools)\ninstall_github(\"huatengh/Classiphy\")\nlibrary(Classiphy)\n\nsimphy.simu(simphy.executable = \"simphy_mac64\",control.file = \"testcontrol.txt\")\n",
+    "created" : 1515133687404.000,
+    "dirty" : true,
+    "encoding" : "",
+    "folds" : "",
+    "hash" : "1020478704",
+    "id" : "30776D2F",
+    "lastKnownWriteTime" : 0,
+    "last_content_update" : 1515135034276,
+    "path" : null,
+    "project_path" : null,
+    "properties" : {
+        "tempName" : "Untitled1"
+    },
+    "relative_order" : 1,
+    "source_on_save" : false,
+    "source_window" : "",
+    "type" : "r_source"
+}

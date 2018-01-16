@@ -1,1 +1,0 @@
-./simphy_mac64 -I testcontrol.txt 

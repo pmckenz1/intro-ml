@@ -353,21 +353,46 @@ class DataBase(object):
         of parameter values to test. Returns the number of the simulations.
         Simulation metadata is appended to datasets. 
         """
-        if len(self.database):
-            groupnum = len(self.database)+1
+        
+        ## Does an arguments group already exist?
+        try:
+            self.database['args']
+        except:
+            total_treenum = 0
+            args_array = np.empty(shape=[0,8])
+            argsexists = False
         else:
-            groupnum = 1
-        simnum = 0
+            total_treenum = len(self.database['args'])
+            args_array = self.database['args']
+            argsexists = True
         for treenum in range(len(self.trees)):
-            groupname = '/tree'+str(groupnum)
-            self.database.create_group(groupname)
+            ## Get each tree
             currtree = toytree.tree(self.trees[treenum])
+            ## Get each possible admixture event
             admixedges = get_all_admix_edges(currtree)
-            self.database[groupname].attrs['admix_intervals'] = admixedges.values()
-            self.database[groupname].attrs['admix_branches'] = admixedges.keys()
-            groupnum += 1
-            simnum += len(admixedges)
-        return simnum
+            intervals = admixedges.values()
+            branches = admixedges.keys()
+            onetreetests=np.empty(shape=[0,8])
+            for event in range(len(branches)):
+                ## initialize a model -- we'll use this to get parameters for each test on this admixture event
+                carr = Model(
+                    currtree, 
+                    admixture_edges=(branches[event][0], branches[event][1], None, None, None),
+                    ntests=10)
+                ## save relevant parameters for each test
+                eventtest = np.column_stack([[total_treenum]*carr.ntests, 
+                                np.repeat(np.array([branches[event]]),carr.ntests,axis = 0),
+                                np.repeat(np.array([intervals[event]]),carr.ntests,axis = 0),
+                                carr.test_values[0]['mtimes'], 
+                                carr.test_values[0]['mrates']])
+                onetreetests=np.vstack([onetreetests,eventtest])
+
+            total_treenum += 1
+            ## Add to the overall args array
+            args_array = np.vstack([args_array, np.array(onetreetests)])
+            self.database.clear()
+            self.database.create_dataset("args", data=args_array)
+        return(len(args_array))
 
 
 

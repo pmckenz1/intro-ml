@@ -316,13 +316,29 @@ class DataBase(object):
     An object to parallelize simulations over many parameter settings
     and store finished reps in a HDF5 database    
     """
-    def __init__(self, name, treelist, workdir="sim-databases/", force=False, **kwargs):
+    def __init__(self, name, treelist, Ne, mut, nsnps, ntests, seed, workdir="sim-databases/", force=False, **kwargs):
         
         ## identify this set of simulations
         self.name = name
         self.workdir = workdir
         self.path = os.path.join(workdir, self.name+".hdf5")
         self.trees = treelist
+        
+        ## Define function to use below to make arguments the correct length
+        def _make_vector(arg):
+            if type(arg) is int or type(arg) is float:
+                return([arg]*len(self.trees))
+            if (type(arg) is list) and (len(arg) is len(self.trees)):
+                return(arg)
+            else: raise ValueError("Ne, mut, nsnps, and ntests arguments each must be an int/float (which will be applied to all trees) or be a list the same length as the tree list")
+
+        
+        ## Accept arguments of length 1 or of the same length as the treelist
+        self.Ne = _make_vector(Ne)
+        self.mut = _make_vector(mut)
+        self.nsnps = _make_vector(nsnps)
+        self.ntests = _make_vector(ntests)
+        self.seed = _make_vector(seed)
         
         ## make sure workdir exists
         if not os.path.exists(workdir):
@@ -345,6 +361,7 @@ class DataBase(object):
         ## Create datasets for all planned simulations and write
         ## accompanying metadata for sim params in each data set
         self.ndatasets = self._generate_database()
+        self.database.close()
 
         
     def _generate_database(self):
@@ -354,12 +371,12 @@ class DataBase(object):
         Simulation metadata is appended to datasets. 
         """
         
-        ## Does an arguments group already exist?
+        ## Does an arguments group already exist in your database file?
         try:
             self.database['args']
         except:
             total_treenum = 0
-            args_array = np.empty(shape=[0,8])
+            args_array = np.empty(shape=[0,13])
             argsexists = False
         else:
             total_treenum = len(self.database['args'])
@@ -368,43 +385,133 @@ class DataBase(object):
         for treenum in range(len(self.trees)):
             ## Get each tree
             currtree = toytree.tree(self.trees[treenum])
+            
             ## Get each possible admixture event
             admixedges = get_all_admix_edges(currtree)
             intervals = admixedges.values()
             branches = admixedges.keys()
-            onetreetests=np.empty(shape=[0,8])
+            onetreetests=np.empty(shape=[0,13])
             for event in range(len(branches)):
                 ## initialize a model -- we'll use this to get parameters for each test on this admixture event
-                carr = Model(
-                    currtree, 
-                    admixture_edges=(branches[event][0], branches[event][1], None, None, None),
-                    ntests=10)
+                carr = Model(Ne = self.Ne[treenum],
+                             mut = self.mut[treenum],
+                             nsnps = self.nsnps[treenum],
+                             ntests = self.ntests[treenum],
+                             seed = self.seed[treenum],
+                             tree = currtree, 
+                             admixture_edges=(branches[event][0], branches[event][1], None, None, None))
                 ## save relevant parameters for each test
                 eventtest = np.column_stack([[total_treenum]*carr.ntests, 
                                 np.repeat(np.array([branches[event]]),carr.ntests,axis = 0),
                                 np.repeat(np.array([intervals[event]]),carr.ntests,axis = 0),
                                 carr.test_values[0]['mtimes'], 
-                                carr.test_values[0]['mrates']])
+                                carr.test_values[0]['mrates'],
+                                [carr.Ne]*carr.ntests,
+                                [carr.mut]*carr.ntests,
+                                [carr.nsnps]*carr.ntests,
+                                [carr.ntests]*carr.ntests,
+                                [self.seed[treenum]]*carr.ntests])
                 onetreetests=np.vstack([onetreetests,eventtest])
 
             total_treenum += 1
             ## Add to the overall args array
             args_array = np.vstack([args_array, np.array(onetreetests)])
+            
+            ## We should be holding the whole database in Python right now, so we want to add to a blank slate
             self.database.clear()
             self.database.create_dataset("args", data=args_array)
         return(len(args_array))
 
 
 
-    def run(self, ipyclient, force=False):
+    def run(self, force=False):
+        
         """
         Distribute simulations across a parallel Client. If continuing
         a previous run then any unfinished simulation will be queued up
         to run. 
         """
         
+        def _add_mat(arr, numberdone):
+            """
+            Add one matrix to the HDF5 'counts' group. Collette book page 39.
+            """
+            counts_set[numberdone,:,:] = arr
+            numberdone += 1
+            return(numberdone)
+
+        def _done(numberdone):
+            """
+            Resize your HDF5 'counts' group at the end to the same length as filled count matrices. Collette book page 40.
+            """
+            counts_set.resize((numberdone,16,16))
+        
+        ## need to get ipyclient feature working
+        #run(self, ipyclient, force=False):
+        
+        
+        mydatabase = h5py.File(self.path, mode='r+')
+        sizeargs = mydatabase['args'].len()
+        
+        ## Does a counts group already exist in your database file?
+        try:
+            mydatabase['counts']
+        except:
+            ## if 'counts' doesn't exist
+            numberdone = 0 # will adjust this at the end of the loop
+            countexists = False
+            ## initialize the group
+            counts_set = mydatabase.create_dataset('counts',(1,16,16),maxshape = (None, 16, 16), chunks = (4,16,16),dtype=int)
+        else:
+            numberdone = len(mydatabase['counts'])
+            countexists = True
+        
+
+        
+        trigger = 0 # will change this to 1 once we are done
+        while not trigger:
+            argsleft = sizeargs - numberdone # fill this at the beginning of each loop
+
+            if argsleft > 1000:
+                windowsize = 1000
+            else:
+                windowsize = argsleft
+
+            ## create empty dataset to hold your set of int paras
+            argsints = np.empty((windowsize,6),dtype=int)
+            ## fill the dataset with the window of values you want
+            mydatabase['args'].read_direct(argsints, np.s_[numberdone:(numberdone+windowsize),[0,1,2,8,10,12]])
+            ## create empty dataset to hold your set of float paras
+            argsflts = np.empty((windowsize,4),dtype=float)
+            ## fill the dataset with the window of values you want
+            mydatabase['args'].read_direct(argsflts, np.s_[numberdone:(numberdone+windowsize),[5,6,7,9]])
+
+            # resize this for writing the current window
+            counts_set.resize((len(counts_set)+1000,16,16))
+            for idx in xrange(windowsize):
+                treenum, sourcebr, destbr, Ne, nsnps, seed = argsints[idx,:]
+                mtimerecent, mtimedistant, mrate, mut = argsflts[idx,:]
+                mod = Model(tree = self.trees[treenum],
+                            admixture_edges = [(sourcebr,destbr,mtimerecent,mtimedistant,mrate)],
+                            Ne = Ne,
+                            nsnps = nsnps,
+                            mut = mut,
+                            seed = seed,
+                            ntests = 1)
+                mod.run()
+                numberdone = _add_mat(mod.counts,numberdone)
+                
+            _done(numberdone)
+            
+            ## Exits the loop if we're out of parameter samples in the database 'args' group
+            if numberdone is sizeargs:
+                trigger = 1
+        
+        mydatabase.close()
+        
         ## wrapper for ipyclient to close nicely when interrupted
-        pass
+        #pass
+        return("Done writing database with " + str(numberdone) + " count matrices.")
     
    
 

@@ -15,7 +15,7 @@ setup(
     version=CUR_VERSION,
     url="https://github.com/pmckenz1/intro-ml",
     author="Patrick McKenzie",
-    author_email="patrick.mckenzie@columbia.edu",
+    author_email="p.mckenzie@columbia.edu",
     description="simulation and machine learning algorithms for admixture inference",
     long_description=open('README.md').read(),
     packages=find_packages(),

@@ -18,6 +18,9 @@ import toytree
 import itertools
 import numpy as np
 import msprime as ms
+import datetime
+import time
+import ipyparallel as ipp
 
 
 
@@ -316,7 +319,7 @@ class DataBase(object):
     An object to parallelize simulations over many parameter settings
     and store finished reps in a HDF5 database    
     """
-    def __init__(self, name, treelist, Ne, mut, nsnps, ntests, seed, workdir="sim-databases/", force=False, **kwargs):
+    def __init__(self, name, treelist, Ne, mut, nsnps, ntests, seed, workdir= (os.getcwd() + "sim-databases/"), force=False, **kwargs):
         
         ## identify this set of simulations
         self.name = name
@@ -440,6 +443,7 @@ class DataBase(object):
             numberdone += 1
             return(numberdone)
 
+
         def _done(numberdone):
             """
             Resize your HDF5 'counts' group at the end to the same length as filled count matrices. Collette book page 40.
@@ -468,8 +472,13 @@ class DataBase(object):
         
 
         
-        trigger = 0 # will change this to 1 once we are done
-        while not trigger:
+        trigger = 1 # will change this to 0 once we are done
+
+        ## initialize client
+        c = ipp.Client()
+        lbview = c.load_balanced_view()
+        
+        while trigger:
             argsleft = sizeargs - numberdone # fill this at the beginning of each loop
 
             if argsleft > 1000:
@@ -479,33 +488,67 @@ class DataBase(object):
 
             ## create empty dataset to hold your set of int paras
             argsints = np.empty((windowsize,6),dtype=int)
-            ## fill the dataset with the window of values you want
+            ## fill the dataset with the window of values you want (ints)
             mydatabase['args'].read_direct(argsints, np.s_[numberdone:(numberdone+windowsize),[0,1,2,8,10,12]])
             ## create empty dataset to hold your set of float paras
             argsflts = np.empty((windowsize,4),dtype=float)
-            ## fill the dataset with the window of values you want
+            ## fill the dataset with the window of values you want (floats)
             mydatabase['args'].read_direct(argsflts, np.s_[numberdone:(numberdone+windowsize),[5,6,7,9]])
 
             # resize this for writing the current window
             counts_set.resize((len(counts_set)+1000,16,16))
-            for idx in xrange(windowsize):
-                treenum, sourcebr, destbr, Ne, nsnps, seed = argsints[idx,:]
-                mtimerecent, mtimedistant, mrate, mut = argsflts[idx,:]
-                mod = Model(tree = self.trees[treenum],
-                            admixture_edges = [(sourcebr,destbr,mtimerecent,mtimedistant,mrate)],
-                            Ne = Ne,
-                            nsnps = nsnps,
-                            mut = mut,
-                            seed = seed,
-                            ntests = 1)
-                mod.run()
-                numberdone = _add_mat(mod.counts,numberdone)
-                
-            _done(numberdone)
             
+            #start the parallel computing part!
+            
+            def parallel_model(trees,argsints,argsflts,windowsize):
+                """
+                This takes parameters for a big window of parameters and runs a model on each parameter sample.
+                This is the function to run using ipyparallel
+                Returns an array of shape = [windowsize,16,16]
+                """
+                print("inside model run function")
+                import numpy as np
+                store_counts_parallel = np.empty([windowsize,16,16])
+                for idx in xrange(windowsize):
+                    treenum, sourcebr, destbr, Ne, nsnps, seed = argsints[idx,:]
+                    mtimerecent, mtimedistant, mrate, mut = argsflts[idx,:]
+                    mod = Model(tree = trees[treenum],
+                                admixture_edges = [(sourcebr,destbr,mtimerecent,mtimedistant,mrate)],
+                                Ne = Ne,
+                                nsnps = nsnps,
+                                mut = mut,
+                                seed = seed,
+                                ntests = 1)
+                    mod.run()
+                    store_counts_parallel[idx,:,:]=mod.counts
+                return store_counts_parallel
+            #return([parallel_model,self.trees,argsints,argsflts,windowsize]) ## for debugging
+            
+            ## Set client to work
+            task = lbview.apply(parallel_model,self.trees,argsints,argsflts,windowsize)
+            start = time.time()
+            while 1:
+                elapsed = datetime.timedelta(seconds=int(time.time()-start))
+                if not task.ready():
+                    time.sleep(0.1)
+                else:
+                    break
+            end = time.time()
+            print(end-start)
+            
+            ## Save the results from parallel
+            resultsarray = task.result()
+            
+            ## Now add all of our count matrices to HDF5
+            for resultsmatrix in resultsarray:
+                numberdone = _add_mat(resultsmatrix,numberdone)
+            
+            _done(numberdone)
+            print(numberdone)
+            print(sizeargs)
             ## Exits the loop if we're out of parameter samples in the database 'args' group
-            if numberdone is sizeargs:
-                trigger = 1
+            if numberdone == sizeargs:
+                trigger = 0
         
         mydatabase.close()
         

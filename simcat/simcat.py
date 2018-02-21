@@ -380,11 +380,14 @@ class DataBase(object):
         except:
             total_treenum = 0
             args_array = np.empty(shape=[0,13])
+            tree_array = np.empty(shape=[0,1])
             argsexists = False
         else:
             total_treenum = len(self.database['args'])
             args_array = self.database['args']
+            tree_array = self.database['trees']
             argsexists = True
+            
         for treenum in range(len(self.trees)):
             ## Get each tree
             currtree = toytree.tree(self.trees[treenum])
@@ -394,6 +397,7 @@ class DataBase(object):
             intervals = admixedges.values()
             branches = admixedges.keys()
             onetreetests=np.empty(shape=[0,13])
+            newtrees=np.empty(shape=[0,1])
             for event in range(len(branches)):
                 ## initialize a model -- we'll use this to get parameters for each test on this admixture event
                 carr = Model(Ne = self.Ne[treenum],
@@ -415,14 +419,17 @@ class DataBase(object):
                                 [carr.ntests]*carr.ntests,
                                 [self.seed[treenum]]*carr.ntests])
                 onetreetests=np.vstack([onetreetests,eventtest])
+                newtrees = np.vstack([newtrees,np.tile(np.array(self.trees[treenum]),[carr.ntests,1])])
 
             total_treenum += 1
             ## Add to the overall args array
             args_array = np.vstack([args_array, np.array(onetreetests)])
+            tree_array = np.vstack([tree_array, np.array(newtrees)])
             
             ## We should be holding the whole database in Python right now, so we want to add to a blank slate
             self.database.clear()
             self.database.create_dataset("args", data=args_array)
+            self.database.create_dataset("trees", data=tree_array)
         return(len(args_array))
 
 

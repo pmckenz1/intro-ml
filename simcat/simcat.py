@@ -32,7 +32,7 @@ class Model(object):
         tree, 
         admixture_edges=[], 
         Ne=int(1e5), 
-        mut=1e-8, 
+        mut=1e-5, 
         nsnps=1000, 
         ntests=100, 
         seed=12345, 
@@ -40,7 +40,7 @@ class Model(object):
         """
         An object for running simulations to attain genotype matrices for many
         independent runs to sample Nrep SNPs. 
-        
+  
         Parameters:
         -----------
         tree: (str)
@@ -49,10 +49,10 @@ class Model(object):
             
         admixture_edges (list):
             A list of admixture events in the format (source, dest, start, end, rate).
-        
+
         Ne (int):
             Effective population size (single fixed value currently)
-            
+
         mut (float):
             Mutation rate.   
         """
@@ -61,13 +61,13 @@ class Model(object):
 
         ## hidden argument to turn on debugging
         self._debug = [True if kwargs.get("debug") else False][0]
-        
+
         ## store sim params as attrs
         self.Ne = Ne
         self.mut = mut
         self.nsnps = nsnps
         self.ntests = ntests
-        
+
         ## parse the input tree
         if isinstance(tree, toytree.tree):
             self.tree = tree
@@ -89,15 +89,15 @@ class Model(object):
                 raise ValueError(
                     "admixture events should each be a tuple with 5 values")
         self.admixture_edges = admixture_edges
-        
+
         ## generate migration parameters from the tree and admixture_edges
         ## stores data in memory as self.test_values
         self.get_test_values()
-        
+
         ## store results (empty until you run .run())
         self.counts = None
-        
-        
+
+
     def get_test_values(self): 
         """
         Generates mrates and mtimes arrays for a range of values (ns) where
@@ -107,11 +107,11 @@ class Model(object):
         """
         ## init a dictionary for storing arrays for each admixture scenario
         self.test_values = {}
-        
+
         ## iterate over events in admixture list
         idx = 0
         for event in self.admixture_edges:
-            
+
             ## if times and rate were provided then use em.
             if all(event[-3:]):
                 mrates = np.repeat(event[4], self.ntests)
@@ -141,8 +141,8 @@ class Model(object):
                 if self._debug:
                     print("uniform testvals mig:", (edge_min, edge_max), (minmig, maxmig))
             idx += 1
-            
-    
+
+
     def plot_test_values(self):
         """
         Returns a toyplot canvas 
@@ -277,7 +277,7 @@ class Model(object):
         run and parse results for nsamples simulations.
         """
         ## storage for output
-        self.counts = np.zeros((self.ntests, 16, 16), dtype=int)    
+        self.counts = np.zeros((self.ntests, self.nquarts, 16, 16), dtype=int)    
         for ridx in range(self.ntests):
             ## run simulation for demography idx
             sims = self._simulate(ridx)
@@ -310,48 +310,49 @@ def count(i):
     """
     arr = np.zeros((16, 16), dtype=np.uint16)
     arr[(4*i[0])+i[1], (4*i[2])+i[3]] += 1
-    return arr    
+    return arr
 
 
 
 class DataBase(object):
     """
     An object to parallelize simulations over many parameter settings
-    and store finished reps in a HDF5 database    
+    and store finished reps in a HDF5 database.
     """
-    def __init__(self, name, treelist, Ne, mut, nsnps, ntests, seed, workdir= (os.getcwd() + "sim-databases/"), force=False, **kwargs):
-        
+    def __init__(self,
+        name,
+        workdir,
+        treelist,
+        Ne,
+        mut,
+        nsnps,
+        ntests,
+        seed,
+        force=False,
+        **kwargs):
+
         ## identify this set of simulations
         self.name = name
         self.workdir = workdir
         self.path = os.path.join(workdir, self.name+".hdf5")
         self.trees = treelist
-        
-        ## Define function to use below to make arguments the correct length
-        def _make_vector(arg):
-            if type(arg) is int or type(arg) is float:
-                return([arg]*len(self.trees))
-            if (type(arg) is list) and (len(arg) is len(self.trees)):
-                return(arg)
-            else: raise ValueError("Ne, mut, nsnps, and ntests arguments each must be an int/float (which will be applied to all trees) or be a list the same length as the tree list")
 
-        
         ## Accept arguments of length 1 or of the same length as the treelist
         self.Ne = _make_vector(Ne)
         self.mut = _make_vector(mut)
         self.nsnps = _make_vector(nsnps)
         self.ntests = _make_vector(ntests)
         self.seed = _make_vector(seed)
-        
+
         ## make sure workdir exists
         if not os.path.exists(workdir):
             os.makedirs(workdir)
-        
+
         ## create database in 'w-' mode to prevent overwriting
         if os.path.exists(self.path):
             if force:
                 ## exists and destroy it
-                if raw_input("Are you sure you want to overwrite the database? "):
+                if raw_input("Do you really want to overwrite the database?"):
                     os.remove(self.path)
                     self.database = h5py.File(self.path, mode='w')                    
             else:
@@ -363,10 +364,23 @@ class DataBase(object):
 
         ## Create datasets for all planned simulations and write
         ## accompanying metadata for sim params in each data set
-        self.ndatasets = self._generate_database()
+        self._generate_database()
         self.database.close()
 
-        
+
+    def _make_vector(arg):
+        "checks input argument length and type"
+        if type(arg) is int or type(arg) is float:
+            return([arg]*len(self.trees))
+        if (type(arg) is list) and (len(arg) is len(self.trees)):
+            return(arg)
+        else: 
+            raise ValueError(
+                "Ne, mut, nsnps, and ntests arguments each must be an \
+                 int/float (which will be applied to all trees) or be a \
+                 list the same length as the tree list")
+
+
     def _generate_database(self):
         """
         Parses parameters in self.params to create all combinations
@@ -387,7 +401,8 @@ class DataBase(object):
             args_array = self.database['args']
             tree_array = self.database['trees']
             argsexists = True
-            
+
+        # iterate over trees and ...
         for treenum in range(len(self.trees)):
             ## Get each tree
             currtree = toytree.tree(self.trees[treenum])
@@ -430,7 +445,8 @@ class DataBase(object):
             self.database.clear()
             self.database.create_dataset("args", data=args_array)
             self.database.create_dataset("trees", data=tree_array)
-        return(len(args_array))
+        ## store result
+        self.ndatasets = len(args_array)
 
 
 

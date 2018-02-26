@@ -281,12 +281,17 @@ class Model(object):
         for ridx in range(self.ntests):
             ## run simulation for demography idx
             sims = self._simulate(ridx)
+            ## this will give us a bunch of small trees to sample from, and we'll parse with next()
+            ## and we can just pick snps one for each tree, with shape (1,ntaxa)
+            ## we'll do this until we've filled an array of shape (nsnps,ntips)
+            
+            snparr = np.zeros((self.nsnps,self.ntips))
             
             ## array to store site counts
             carr = np.zeros((self.nsnps, 16, 16))
             
-            ## continue until nsnps are simulated
-            fidx = 0
+            ### continue until nsnps are simulated
+            #fidx = 0
             while fidx < self.nsnps:
                 ## get just the first mutation
                 bingenos = sims.next().genotype_matrix()
@@ -521,7 +526,7 @@ class DataBase(object):
             # resize this for writing the current window
             counts_set.resize((len(counts_set)+1000,16,16))
             
-            #start the parallel computing part!
+            #start parallel computing part
             
             def parallel_model(trees,argsints,argsflts,windowsize):
                 """

@@ -21,6 +21,7 @@ import msprime as ms
 import datetime
 import time
 import ipyparallel as ipp
+import scipy
 
 
 
@@ -77,6 +78,17 @@ class Model(object):
             raise TypeError("input tree should be newick str or Toytree object")
         self.ntips = len(self.tree)
 
+        self.namedict = {}
+        leaf = 0
+        for node in self.tree.tree.traverse():
+            if node.is_leaf():
+                ## store old name
+                self.namedict[str(node.idx)] = node.name
+                ## set new name
+                node.name = str(node.idx) #leaf
+                ## advance counter
+                #leaf += 1   
+        
         ## parse the input admixture edges. It should a list of tuples, or list
         ## of lists where each element has five values. 
         if admixture_edges:
@@ -277,7 +289,13 @@ class Model(object):
         run and parse results for nsamples simulations.
         """
         ## storage for output
-        self.counts = np.zeros((self.ntests, self.nquarts, 16, 16), dtype=int)    
+        #self.counts = np.zeros((self.ntests, self.nquarts, 16, 16), dtype=int)
+        
+        self.nquarts = int(scipy.special.comb(N=self.ntips,k=4))
+        self.quarts = np.array(list(itertools.combinations(xrange(self.ntips), 4)))
+        self.snps = np.zeros((self.ntests,self.nsnps,self.ntips))
+        self.counts = np.zeros((self.ntests, self.nquarts, 16, 16))
+        
         for ridx in range(self.ntests):
             ## run simulation for demography idx
             sims = self._simulate(ridx)
@@ -285,13 +303,10 @@ class Model(object):
             ## and we can just pick snps one for each tree, with shape (1,ntaxa)
             ## we'll do this until we've filled an array of shape (nsnps,ntips)
             
-            snparr = np.zeros((self.nsnps,self.ntips))
-            
-            ## array to store site counts
-            carr = np.zeros((self.nsnps, 16, 16))
+            snparr = np.zeros((self.nsnps,self.ntips), dtype=np.uint16)
             
             ### continue until nsnps are simulated
-            #fidx = 0
+            fidx = 0
             while fidx < self.nsnps:
                 ## get just the first mutation
                 bingenos = sims.next().genotype_matrix()
@@ -299,11 +314,33 @@ class Model(object):
                 sitegenos = self.mutate_jc(bingenos)
                 ## count it
                 if sitegenos.size:
-                    carr[fidx] = count(sitegenos)
+                    snparr[fidx] = sitegenos
                     fidx += 1
                     
-            ## fill site counts into 16x16 matrix
-            self.counts[ridx] = carr.sum(axis=0)
+            ## making a full snps array for now
+            self.snps[ridx] = snparr
+            
+            ## keep track for counts index
+            quartidx = 0
+            
+            ## iterator for quartets
+            qiter = itertools.combinations(xrange(self.ntips), 4)
+            for currquart in qiter:
+                ## luckily, because we've renamed taxa with node.idx convention, col numbers correspond to tip label
+                quartsnps = snparr[:,currquart]
+                carr = np.zeros((self.nsnps, 16, 16),dtype = np.uint64)
+                snpidx = 0
+                for snp in quartsnps:
+                    carr[snpidx] = count(snp)
+                    snpidx += 1
+                self.counts[ridx, quartidx] = carr.sum(axis=0)
+                quartidx += 1
+            ### array to store site counts
+            #carr = np.zeros((self.nsnps, 16, 16))
+            #        carr[fidx] = count(sitegenos)
+            #        
+            ### fill site counts into 16x16 matrix
+            #self.counts[ridx] = carr.sum(axis=0)
 
 
 

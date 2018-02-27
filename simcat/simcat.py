@@ -378,6 +378,18 @@ class DataBase(object):
         self.workdir = workdir
         self.path = os.path.join(workdir, self.name+".hdf5")
         self.trees = treelist
+        
+        def _make_vector(arg):
+            "checks input argument length and type"
+            if type(arg) is int or type(arg) is float:
+                return([arg]*len(self.trees))
+            if (type(arg) is list) and (len(arg) is len(self.trees)):
+                return(arg)
+            else: 
+                raise ValueError(
+                    "Ne, mut, nsnps, and ntests arguments each must be an \
+                     int/float (which will be applied to all trees) or be a \
+                     list the same length as the tree list")
 
         ## Accept arguments of length 1 or of the same length as the treelist
         self.Ne = _make_vector(Ne)
@@ -385,7 +397,7 @@ class DataBase(object):
         self.nsnps = _make_vector(nsnps)
         self.ntests = _make_vector(ntests)
         self.seed = _make_vector(seed)
-
+        self.nquarts = int(scipy.special.comb(N=len(toytree.tree(self.trees[0]).get_tip_labels()), k=4))
         ## make sure workdir exists
         if not os.path.exists(workdir):
             os.makedirs(workdir)
@@ -408,19 +420,6 @@ class DataBase(object):
         ## accompanying metadata for sim params in each data set
         self._generate_database()
         self.database.close()
-
-
-    def _make_vector(arg):
-        "checks input argument length and type"
-        if type(arg) is int or type(arg) is float:
-            return([arg]*len(self.trees))
-        if (type(arg) is list) and (len(arg) is len(self.trees)):
-            return(arg)
-        else: 
-            raise ValueError(
-                "Ne, mut, nsnps, and ntests arguments each must be an \
-                 int/float (which will be applied to all trees) or be a \
-                 list the same length as the tree list")
 
 
     def _generate_database(self):
@@ -504,16 +503,23 @@ class DataBase(object):
             """
             Add one matrix to the HDF5 'counts' group. Collette book page 39.
             """
-            counts_set[numberdone,:,:] = arr
-            numberdone += 1
-            return(numberdone)
+            counts_set[numberdone,:,:,:] = arr.astype(int)
+            return(numberdone+1)
 
+        def _add_quarts(arr, numberdone):
+            """
+            Add one matrix to the HDF5 'counts' group. Collette book page 39.
+            """
+            quarts_set[numberdone,:,:] = arr.astype(int)
+            return(numberdone + 1)
 
-        def _done(numberdone):
+        def _done(numberdone,nquarts):
             """
             Resize your HDF5 'counts' group at the end to the same length as filled count matrices. Collette book page 40.
             """
-            counts_set.resize((numberdone,16,16))
+            counts_set.resize((numberdone,nquarts,16,16))
+            quarts_set.resize((numberdone,nquarts,4))
+            
         
         ## need to get ipyclient feature working
         #run(self, ipyclient, force=False):
@@ -530,7 +536,8 @@ class DataBase(object):
             numberdone = 0 # will adjust this at the end of the loop
             countexists = False
             ## initialize the group
-            counts_set = mydatabase.create_dataset('counts',(1,16,16),maxshape = (None, 16, 16), chunks = (4,16,16),dtype=int)
+            counts_set = mydatabase.create_dataset('counts',(1,self.nquarts, 16,16),maxshape = (None, self.nquarts, 16, 16), chunks = (4,self.nquarts,16,16),dtype=int)
+            quarts_set = mydatabase.create_dataset('quarts',(1,self.nquarts,4),maxshape = (None,self.nquarts, 4), chunks=(1,self.nquarts,4),dtype=int)
         else:
             numberdone = len(mydatabase['counts'])
             countexists = True
@@ -546,8 +553,8 @@ class DataBase(object):
         while trigger:
             argsleft = sizeargs - numberdone # fill this at the beginning of each loop
 
-            if argsleft > 1000:
-                windowsize = 1000
+            if argsleft > 100:
+                windowsize = 100
             else:
                 windowsize = argsleft
 
@@ -561,11 +568,12 @@ class DataBase(object):
             mydatabase['args'].read_direct(argsflts, np.s_[numberdone:(numberdone+windowsize),[5,6,7,9]])
 
             # resize this for writing the current window
-            counts_set.resize((len(counts_set)+1000,16,16))
+            counts_set.resize((len(counts_set)+windowsize,self.nquarts,16,16))
+            quarts_set.resize((len(quarts_set)+windowsize,self.nquarts,4))
             
             #start parallel computing part
             
-            def parallel_model(trees,argsints,argsflts,windowsize):
+            def parallel_model(trees,argsints,argsflts,windowsize,nquarts):
                 """
                 This takes parameters for a big window of parameters and runs a model on each parameter sample.
                 This is the function to run using ipyparallel
@@ -573,7 +581,8 @@ class DataBase(object):
                 """
                 print("inside model run function")
                 import numpy as np
-                store_counts_parallel = np.empty([windowsize,16,16])
+                store_counts_parallel = np.empty([windowsize,nquarts,16,16])
+                store_quarts_parallel = np.empty([windowsize,nquarts,4])
                 for idx in xrange(windowsize):
                     treenum, sourcebr, destbr, Ne, nsnps, seed = argsints[idx,:]
                     mtimerecent, mtimedistant, mrate, mut = argsflts[idx,:]
@@ -585,12 +594,13 @@ class DataBase(object):
                                 seed = seed,
                                 ntests = 1)
                     mod.run()
-                    store_counts_parallel[idx,:,:]=mod.counts
-                return store_counts_parallel
+                    store_counts_parallel[idx,:,:,:]=mod.counts
+                    store_quarts_parallel[idx,:,:]=mod.quarts 
+                return store_counts_parallel, store_quarts_parallel
             #return([parallel_model,self.trees,argsints,argsflts,windowsize]) ## for debugging
             
             ## Set client to work
-            task = lbview.apply(parallel_model,self.trees,argsints,argsflts,windowsize)
+            task = lbview.apply(parallel_model,self.trees,argsints,argsflts,windowsize,self.nquarts)
             start = time.time()
             while 1:
                 elapsed = datetime.timedelta(seconds=int(time.time()-start))
@@ -602,13 +612,14 @@ class DataBase(object):
             print(end-start)
             
             ## Save the results from parallel
-            resultsarray = task.result()
+            resultsarray, quartsarray = task.result()
             
             ## Now add all of our count matrices to HDF5
-            for resultsmatrix in resultsarray:
+            for resultsmatrix, quartsrow in zip(resultsarray, quartsarray):
+                _add_quarts(quartsrow,numberdone)
                 numberdone = _add_mat(resultsmatrix,numberdone)
             
-            _done(numberdone)
+            _done(numberdone,self.nquarts)
             print(numberdone)
             print(sizeargs)
             ## Exits the loop if we're out of parameter samples in the database 'args' group

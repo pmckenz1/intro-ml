@@ -96,9 +96,8 @@ class Model(object):
         ## parse the input admixture edges. It should a list of tuples, or list
         ## of lists where each element has five values. 
         if admixture_edges:
-            if isinstance(admixture_edges, tuple):
-                admixture_edges = [admixture_edges]
-            if not isinstance(admixture_edges[0], (list, tuple)):
+            ## single list or tuple: [a, b, c, d, e] or (a, b, c, d, e)
+            if isinstance(admixture_edges[0], (str, int)):
                 admixture_edges = [admixture_edges]
         for event in admixture_edges:
             if len(event) != 5:
@@ -107,7 +106,7 @@ class Model(object):
         self.admixture_edges = admixture_edges
 
         ## generate migration parameters from the tree and admixture_edges
-        ## stores data in memory as self.test_values
+        ## stores data in memory as self.test_values as 'mrates' and 'mtimes'
         self._get_test_values()
 
 
@@ -125,13 +124,12 @@ class Model(object):
         ## iterate over events in admixture list
         idx = 0
         for event in self.admixture_edges:
-
             ## if times and rate were provided then use em.
-            if all(event[-3:]):
+            if all((i is not None for i in event[-3:])):
                 mrates = np.repeat(event[4], self.nreps)
                 mtimes = np.stack([
-                    np.repeat(event[2], self.nreps), 
-                    np.repeat(event[3], self.nreps)], axis=1)
+                    np.repeat(event[2] * 2. * self.Ne, self.nreps), 
+                    np.repeat(event[3] * 2. * self.Ne, self.nreps)], axis=1)
                 self.test_values[idx] = {"mrates": mrates, "mtimes": mtimes}
 
             ## otherwise generate uniform values across edges

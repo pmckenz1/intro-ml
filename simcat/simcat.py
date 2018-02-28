@@ -13,8 +13,9 @@ from builtins import range
 import os
 import h5py
 import time
+import copy
 import numba
-import sklearn
+#import sklearn  # we may want to perform the ML stuff in a separate .py file
 import toyplot
 import toytree
 import datetime
@@ -32,13 +33,13 @@ class Model(object):
     A coalescent model for returning ms simulations. 
     """
     def __init__(self, 
-        tree, 
-        admixture_edges=[], 
-        Ne=int(1e5), 
-        mut=1e-5, 
-        nsnps=1000, 
-        nreps=100, 
-        seed=12345, 
+        tree,
+        admixture_edges=None,
+        Ne=int(1e5),
+        mut=1e-5,
+        nsnps=1000,
+        nreps=100,
+        seed=12345,
         **kwargs):
         """
         An object for running simulations to attain genotype matrices for many
@@ -99,6 +100,8 @@ class Model(object):
             ## single list or tuple: [a, b, c, d, e] or (a, b, c, d, e)
             if isinstance(admixture_edges[0], (str, int)):
                 admixture_edges = [admixture_edges]
+        else:
+            admixture_edges = []
         for event in admixture_edges:
             if len(event) != 5:
                 raise ValueError(
@@ -546,9 +549,10 @@ class DataBase(object):
         then the input tree is simply returned. 
         """
         while 1:
-            if self.edge_function:
-                raise NotImplementedError(
-                    "'edge_function' argument is not yet supported")
+            if self.edge_function == "node_slider":
+                yield node_slider(self.tree)
+            elif self.edge_function == "poisson":
+                raise NotImplementedError("Not yet supported")
             else:
                 yield self.tree
 
@@ -894,6 +898,51 @@ class DataBase(object):
         return("Done writing database with " + str(numberdone) + " count matrices.")
 
 
+def node_slider(ttree):
+    """
+    Returns a toytree copy with node heights modified while retaining the 
+    same topology but not necessarily node branching order. Node heights are
+    moved up or down uniformly between their parent and highest child node 
+    heights in 'levelorder' from root to tips. The total tree height is 
+    retained at 1.0, only relative edge lengths change.
+
+    ## for example run:
+    c, a = node_slide(ctree).draw(
+        width=400,
+        orient='down', 
+        node_labels='idx',
+        node_size=15,
+        tip_labels=False
+        );
+    a.show = True
+    a.x.show = False
+    a.y.ticks.show = True
+    """
+    ctree = copy.deepcopy(ttree)
+    for node in ctree.tree.traverse():
+
+        ## slide internal nodes 
+        if node.up and node.children:
+
+            ## get min and max slides
+            minjit = max([i.dist for i in node.children]) * 0.99
+            maxjit = (node.up.height * 0.99) - node.height
+            newheight = np.random.uniform(low=-minjit, high=maxjit)
+
+            ## slide children
+            for child in node.children:
+                child.dist += newheight
+
+            ## slide self to match
+            node.dist -= newheight
+
+    ## make max height = 1
+    mod = ctree.tree.height
+    for node in ctree.tree.traverse():
+        node.dist = node.dist / float(mod)
+
+    return ctree
+
 
 ### Convenience functions on toytrees
 def get_all_admix_edges(ttree):
@@ -922,6 +971,5 @@ def get_all_admix_edges(ttree):
                 low_bin = max(smin, dmin)
                 top_bin = min(smax, dmax)
                 if top_bin > low_bin:
-                    aedge = (snode.idx, dnode.idx, low_bin, top_bin)
                     intervals[(snode.idx, dnode.idx)] = (low_bin, top_bin)
     return intervals

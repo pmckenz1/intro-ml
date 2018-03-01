@@ -28,6 +28,14 @@ from scipy.special import comb
 import ipyrad as ip
 
 
+
+class Modelr(object):
+    pass
+
+
+## notes on work in progress, Ne and theta need to be resolved, 
+## if theta is sampled then Ne needs be generated on the fly as
+## a division of theta, and passed to simulate.
 class Model(object):
     """
     A coalescent model for returning ms simulations. 
@@ -35,12 +43,11 @@ class Model(object):
     def __init__(self, 
         tree,
         admixture_edges=None,
-        Ne=int(1e5),
-        mut=1e-5,
+        theta=0.01,
         nsnps=1000,
-        nreps=100,
-        seed=12345,
-        **kwargs):
+        ntests=10,
+        seed=None,
+        debug=False):
         """
         An object for running simulations to attain genotype matrices for many
         independent runs to sample Nrep SNPs. 
@@ -55,23 +62,31 @@ class Model(object):
             A list of admixture events in the format:
             (source, dest, start, end, rate).
 
-        Ne (int):
-            Effective population size (single fixed value currently)
+        theta (int or tuple):
+            Mutation parameter
 
-        mut (float):
-            Mutation rate.   
+        nsnps (int):
+            Number of unlinked SNPs simulated. 
+
+        ntests (int):
+            Number of admixture events to sample.
         """
         ## init random seed
-        np.random.seed(seed)
+        if seed:
+            np.random.seed(seed)
 
         ## hidden argument to turn on debugging
-        self._debug = [True if kwargs.get("debug") else False][0]
+        self._debug = debug
 
         ## store sim params as attrs
-        self.Ne = Ne
-        self.mut = mut
+        if isinstance(theta, (float, int)):
+            self.theta = (theta, theta)
+        else:
+            self.theta = (min(theta), max(theta))
+        self.mut = 1e-5
+        #self.Ne = 
         self.nsnps = nsnps
-        self.nreps = nreps
+        self.ntests = ntests
 
         ## the counts array (result) is filled by .run()
         self.counts = None
@@ -127,20 +142,33 @@ class Model(object):
         ## iterate over events in admixture list
         idx = 0
         for event in self.admixture_edges:
+            ## sample thetas
+            thetas = np.random.uniform(
+                self.theta[0], self.theta[1], self.ntests)
+            popnes = np.array((thetas / self.mut) / 4.).astype(int)
+            print(popnes)
+
             ## if times and rate were provided then use em.
             if all((i is not None for i in event[-3:])):
-                mrates = np.repeat(event[4], self.nreps)
+                mrates = np.repeat(event[4], self.ntests)
                 mtimes = np.stack([
-                    np.repeat(event[2] * 2. * self.Ne, self.nreps), 
-                    np.repeat(event[3] * 2. * self.Ne, self.nreps)], axis=1)
-                self.test_values[idx] = {"mrates": mrates, "mtimes": mtimes}
+                    event[2] * 2 * popnes,
+                    event[3] * 2 * popnes], axis=1,
+                    )
+                    #np.repeat(event[2] * 2. * self.Ne, self.ntests),
+                    #np.repeat(event[3] * 2. * self.Ne, self.ntests)], axis=1)
+                self.test_values[idx] = {
+                    "mrates": mrates, 
+                    "mtimes": mtimes, 
+                    "thetas": thetas,
+                    }
 
             ## otherwise generate uniform values across edges
             else:        
                 ## get migration rates from zero to ~full
                 minmig = 0.0
                 maxmig = 0.5
-                mrates = np.random.uniform(minmig, maxmig, self.nreps)
+                mrates = np.random.uniform(minmig, maxmig, self.ntests)
 
                 ## get divergence times from source start to end
                 self._intervals = get_all_admix_edges(self.tree)                
@@ -150,9 +178,13 @@ class Model(object):
                 edge_min = int(interval[0] * 2. * self.Ne)
                 edge_max = int(interval[1] * 2. * self.Ne)
                 mtimes = np.sort(
-                    np.random.uniform(edge_min, edge_max, self.nreps*2)
-                    .reshape((self.nreps, 2)), axis=1).astype(int)
-                self.test_values[idx] = {"mrates": mrates, "mtimes": mtimes}
+                    np.random.uniform(edge_min, edge_max, self.ntests*2)
+                    .reshape((self.ntests, 2)), axis=1).astype(int)
+                self.test_values[idx] = {
+                    "mrates": mrates, 
+                    "mtimes": mtimes,
+                    "thetas": thetas,
+                    }
                 if self._debug:
                     print("uniform testvals mig:", 
                          (edge_min, edge_max), (minmig, maxmig))
@@ -302,10 +334,10 @@ class Model(object):
         ## storage for output
         self.nquarts = int(comb(N=self.ntips, k=4))  # scipy.special.comb
         self.counts = np.zeros(
-            (self.nreps, self.nquarts, 16, 16), dtype=np.uint64)
+            (self.ntests, self.nquarts, 16, 16), dtype=np.uint64)
 
-        ## iterate over nreps (different sampled simulation parameters)
-        for ridx in range(self.nreps):
+        ## iterate over ntests (different sampled simulation parameters)
+        for ridx in range(self.ntests):
             ## run simulation for demography ridx
             ## yields a generator of trees to sample from with next()
             ## we select 1 SNP from each tree with shape (1, ntaxa)
@@ -432,7 +464,7 @@ class DataBase(object):
         The number of SNPs in each simulation that are used to build the 
         16x16 arrays of phylogenetic invariants for each quartet sample. 
 
-    theta: int or tuple (default=0.02)
+    theta: int or tuple (default=0.01)
         The mutation parameter (2*Ne*u), or range of values from which values
         will be uniformly drawn across ntests. 
 
@@ -449,9 +481,10 @@ class DataBase(object):
         edge_function=None,
         nsnps=1000,
         nedges=0,
-        ntests=1,
+        ntrees=100,
+        ntests=100,
         nreps=100,
-        Ne=1e6,
+        theta=0.01,
         seed=123,
         force=False,
         debug=False,
@@ -468,14 +501,17 @@ class DataBase(object):
         self._quiet = quiet
 
         ## store params
+        self.theta = theta
         self.tree = tree
         self.edge_function = (edge_function or {})
+
+        ## database label combinations
         self.nedges = nedges
+        self.ntrees = ntrees
         self.ntests = ntests        
         self.nreps = nreps
-        self.nstored_values = None
         self.nsnps = nsnps
-        self.Ne = Ne
+        self.nstored_values = None
 
         ## store ipcluster information 
         self._ipcluster = {
@@ -577,7 +613,7 @@ class DataBase(object):
         ## uses scipy.special.comb
         admixedges = get_all_admix_edges(self.tree)
         nevents = int(comb(N=len(admixedges), k=self.nedges))
-        nvalues = self.ntests * self.nreps * nevents
+        nvalues = nevents * self.ntrees * self.ntests * self.nreps 
         nquarts = int(comb(N=len(self.tree), k=4))
         self.nstored_values = nvalues
 
@@ -595,9 +631,9 @@ class DataBase(object):
             shape=(nvalues, nquarts, 16, 16),
             dtype=np.uint32)
 
-        ## store edge lengths
-        self._db.create_dataset("edge_lengths", 
-            shape=(nvalues, len(self.tree.get_edge_lengths())),
+        ## store node heights
+        self._db.create_dataset("node_heights",
+            shape=(nvalues, sum([1 for i in self.tree.traverse()])),
             dtype=np.float64)
 
         ## store admixture sources and targets in order
@@ -618,7 +654,7 @@ class DataBase(object):
             dtype=np.float64)
 
         ## store parameters of the simulation
-        self._db.create_dataset("Ne",
+        self._db.create_dataset("theta",
             shape=(nvalues, 1),
             dtype=np.uint64)
 
@@ -630,43 +666,44 @@ class DataBase(object):
         and stores the full parameter information into the hdf5 database.
         """
 
-        ## iterate until until all tests are sampled
+        ## (1) ntrees: iterate over each sampled tree (itree)
         tidx = 0
-        for _ in range(self.ntests):
-
-            ## get the next tree
+        for _ in range(self.ntrees):
+            ## sample tree and save node heights in idx order
             itree = self.tree_generator.next()
-
-            ## store edge lengths for labels in node.idx order
-            edge_lengths = [
-                itree.tree.search_nodes(idx=i)[0].dist * 2 * self.Ne
-                for i in range(len(itree.get_edge_lengths()))]
+            node_heights = [
+                itree.tree.search_nodes(idx=i)[0].height * 2 * self.Ne
+                for i in range(sum(1 for i in itree.tree.traverse()))]
 
             ## get all admixture edges that can be drawn on this tree
             admixedges = get_all_admix_edges(itree)
 
-            ## iterate over each possible (edge, interval) item, or pairs or 
-            ## triplets, etc., of them depending on the number of admix_edges
+            ## (2) nevents: iterate over (source, target) items, or pairs or 
+            ## triplets of items depending on nedges combinations.
             eidx = tidx
             events = itt.combinations(admixedges.items(), self.nedges)
-            for event in events:
+            for evt in events:
 
                 ## initalize a Model to sample range of parameters on this edge
                 ## model counts array shape: (ntests*nreps, nquarts, 16, 16)
-                admixlist = [(i[0][0], i[0][1], None, None, None) 
-                    for i in event]
+                admixlist = [(i[0][0], i[0][1], None, None, None) for i in evt]
 
-                ## for help 
-                if self._debug:
-                    print('admixlist', admixlist)
-
+                ## (3) ntests: sample duration, magnitude, and params on edges
+                ## model .run() will make array (ntests, nquarts, 16, 16)
                 model = Model(itree, 
-                    admixture_edges=admixlist,
-                    )
+                    admixture_edges=admixlist, 
+                    ntests=self.ntests, 
+                    theta=self.theta)
 
-                ## store labels for this sim (1 x nreps)
-                self._db["edge_lengths"][eidx:eidx+self.nreps] = edge_lengths
-                self._db["Ne"][eidx:eidx+self.nreps] = self.Ne
+                ## store labels for next load of events (ntests x nreps)
+                ## node_heights for ntests * nreps
+                ## admix_sources, targets for ntests * nreps
+                ## admix_props, tstart, tend for nreps
+                ## theta for nreps
+                nn = self.nreps
+                nnn = self.ntests * self.nreps
+                self._db["node_heights"][eidx:eidx+nnn] = node_heights
+                self._db["theta"][eidx:eidx+nn] = model.test_values
 
                 ## get labels from admixlist and model.test_values
                 for xidx in range(len(admixlist)):

@@ -552,7 +552,8 @@ class DataBase(object):
             if self.edge_function == "node_slider":
                 yield node_slider(self.tree)
             elif self.edge_function == "poisson":
-                raise NotImplementedError("Not yet supported")
+                #raise NotImplementedError("Not yet supported")
+                yield exp_sampler(self.tree)
             else:
                 yield self.tree
 
@@ -582,6 +583,13 @@ class DataBase(object):
             print('nvalues', nvalues)
             print('nquarts', nquarts)
 
+        ## make fixed-length string data type
+        dt = np.dtype("S"+str(len(self.tree.tree.write())))
+
+        ## store topology, just once
+        self._db.create_dataset("topology", 
+            shape=(1,),
+            dtype=dt)
 
         ## store count matrices
         self._db.create_dataset("counts", 
@@ -622,6 +630,8 @@ class DataBase(object):
         for nreps iterations for each admixture edge(s) scenario in the tree
         and stores the full parameter information into the hdf5 database.
         """
+        ## fill topology first
+        self._db["topology"][0]=self.tree.tree.write()
 
         ## iterate until until all tests are sampled
         tidx = 0
@@ -695,6 +705,29 @@ class DataBase(object):
             not running on the default profile then ...
         """
 
+        ## open the database file in read/write, will throw error if not exist
+        self._db = h5py.File(self.database, mode='r+')
+        self.tree = toytree.tree(self._db['topology'][0])
+        ## figure out how many are already done
+        numdone = np.sum(np.sum(self._db['counts'],axis = (1,2,3)) > 0)
+        startidx = numdone
+        ntotal = len(self._db['counts'])
+        batsize = 500
+        endidx = startidx+min(batsize,(ntotal-startidx))
+        ## pull a batch to run
+        bat_Ne = self._db['Ne'][startidx:endidx,]
+        bat_ad_sources = self._db['admix_sources'][startidx:endidx,]
+        bat_ad_targets = self._db['admix_targets'][startidx:endidx,]
+        bat_ad_props = self._db['admix_props'][startidx:endidx,]
+        bat_ad_tstart = self._db['admix_tstart'][startidx:endidx,]
+        bat_ad_tend = self._db['admix_tend'][startidx:endidx,]
+        bat_counts = np.zeros(shape=(np.shape(self._db['counts'][startidx:endidx])))
+
+        print(np.shape(bat_ad_tend))
+        print(bat_ad_tend[0:100])
+
+        ## initialize a bunch of models
+
         ## wrap the run in a try statement to ensure we properly shutdown
         ## and cleanup on exit or interrupt. 
         inst = None
@@ -722,6 +755,10 @@ class DataBase(object):
 
             ## execute here...
             print("ready to run")
+
+            ## give it a bunch of model objects
+            ## expect back a bunch of count matrices
+
 
 
         ## handle exceptions so they will be raised after we clean up below
@@ -943,6 +980,138 @@ def node_slider(ttree):
 
     return ctree
 
+def exp_sampler(ttree, betaval = 1,returndict = None):
+    """
+    Takes an input topology and samples branch lengths
+    
+    Parameters:
+    -----------
+    toytreeobj: toytree
+        The topology for which we want to generate branch lengths
+    betaval: int/float (default=1)
+        The value of beta for the exponential distribution used to generate
+        branch lengths. This is inverse of rate parameter.
+    returndict: str (default=None)
+        If "only", returns only a dictionary matching nodes to heights.
+        If "both", returns toytree and dictionary as a tuple.
+    """
+    tree=copy.deepcopy(ttree)
+    def set_node_height(node,height):
+        childn=node.get_children()
+        for child in childn:
+            child.dist=height - child.height
+    testobj = []
+    
+    # we'll just append each step on each chain to these lists to keep track of where we've already been
+    allnodes = []
+    allnodeheights = []
+    
+    # d is deprecated (it was being returned) and stores the values for each chain
+    #d = {}
+    
+    ## testobj is our traversed full tree
+    for i in tree.tree.traverse():
+        testobj.append(i)
+    
+    # start by getting branch lengths for the longest branch
+    longbranch=sum([testobj[-1] in i for i in testobj]) # counts the number of subtrees containing last leaf, giving length of longest branch
+    longbranchnodes = np.random.exponential(betaval,longbranch) # segment lengths of longest branch
+    longbranchnodes[0] = np.random.uniform(low=0.0,high=longbranchnodes[0]) # cut the edge to the leaf with a uniform draw
+    
+    # get the heights of nodes along this longest (most nodes) branch
+    nodeheights = []
+    currheight = 0
+    for i in longbranchnodes:
+        currheight += i
+        nodeheights.append(currheight)
+    nodeheights = nodeheights[::-1]
+
+    # get indices to accompany long chain
+    lcidx = []
+    for i in testobj:
+        if testobj[-1] in i.get_leaves():
+            lcidx.append(i.idx)
+    #d['0heights'] = np.array(nodeheights)
+    #d['0nodes'] = np.array(lcidx[:-1])
+    
+    allnodes = allnodes + lcidx[:-1]
+    allnodeheights = allnodeheights + nodeheights
+    
+    # get other necessary chains to parse
+    other_chains = []
+    for i in range(len(testobj)-1)[::2]:
+        if len(testobj[i+1].get_leaves()) > 1:
+            other_chains.append(testobj[i+1])
+
+    # now solve
+    for chainnum in range(len(other_chains)): # parse the remaining chains one at a time
+        otr=other_chains[chainnum]
+        # find where this chain connects to the a chain we've already solved
+        firstancestor = otr.get_ancestors()[0].idx
+        # which nodeheight does this branch from
+        paridx=np.argmax(np.array(allnodes) == firstancestor) 
+        
+        # traverse the new 
+        testobj1 = []
+        nodes = []
+        
+        # save a list of nodes
+        for i in otr.traverse():
+            testobj1.append(i)
+        
+        # save the nodes that include the end of the chain (because branches out to other chains might not)
+        for i in testobj1:
+            if testobj1[-1] in i.get_leaves():
+                nodes.append(i.idx)
+        
+        # make node index list to accompany lengths
+        lennodes= nodes[:-1] # don't save ending leaf index
+        lennodes.insert(0,firstancestor) # make chain list start with ancestor
+        
+        # figure out how many exponential draws to make for this chain (i.e. # new nodes + 1)
+        num_new_branches = sum([testobj1[-1] in i for i in testobj1])+1
+        
+        # initialize array to hold the draws
+        mir_lens = np.zeros((sum([testobj1[-1] in i for i in testobj1])+1))
+        # draw until we have a new set of exponential branch lengths that fit the constraints of our tree height
+        while not (sum(mir_lens[:(len(mir_lens)-1)]) < allnodeheights[paridx] and (sum(mir_lens) > allnodeheights[paridx])):
+            mir_lens = np.random.exponential(betaval,num_new_branches) ## length of longest branch
+        
+        # now let's save each node value as a height
+        mir_lens_heights = np.zeros((len(mir_lens)))
+        subsum = 0
+        for i in range(len(mir_lens)):
+            mir_lens_heights[i] = allnodeheights[paridx] - subsum
+            subsum = subsum + mir_lens[i]
+            
+        # add our new node indices with their heights to the full list
+        allnodes = list(allnodes) + list(lennodes)
+        allnodeheights = list(allnodeheights) + list(mir_lens_heights)
+        
+        #d[(str(chainnum+1)+"heights")] = mir_lens_heights
+        #d[(str(chainnum+1)+"nodes")] = np.array(lennodes)
+    
+    # make a final dictionary of node heights, eliminating redundancy
+    n = dict(set(zip(*[allnodes,allnodeheights])))
+    
+    if returndict == "only":
+        return n #d
+    elif returndict == "both":
+        # create the tree object
+        for leaf in tree.tree.get_leaves():
+            for node in leaf.iter_ancestors():
+                set_node_height(node,n[node.idx])
+        return (tree,n)
+    else:
+        # create the tree object
+        for leaf in tree.tree.get_leaves():
+            for node in leaf.iter_ancestors():
+                set_node_height(node,n[node.idx])
+            ## make max height = 1
+        mod = tree.tree.height
+        for node in tree.tree.traverse():
+            node.dist = node.dist / float(mod)
+        return tree
 
 ### Convenience functions on toytrees
 def get_all_admix_edges(ttree):

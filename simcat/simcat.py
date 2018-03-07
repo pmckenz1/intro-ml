@@ -591,14 +591,21 @@ class DataBase(object):
             shape=(1,),
             dtype=dt)
 
+        ## store node key, just once
+        self._db.create_dataset("nodekey", 
+            shape=(len([i.idx for i in self.tree.tree.search_nodes()])-len([i 
+                for i in self.tree.tree.get_leaves()]),),
+            dtype=np.uint32)        
+
         ## store count matrices
         self._db.create_dataset("counts", 
             shape=(nvalues, nquarts, 16, 16),
             dtype=np.uint32)
 
-        ## store edge lengths
+        ## store edge lengths: now NODE HEIGHTS
         self._db.create_dataset("edge_lengths", 
-            shape=(nvalues, len(self.tree.get_edge_lengths())),
+            shape=(nvalues, len([i.idx for i in self.tree.tree.search_nodes()])-len([i 
+                for i in self.tree.tree.get_leaves()])),
             dtype=np.float64)
 
         ## store admixture sources and targets in order
@@ -633,17 +640,20 @@ class DataBase(object):
         ## fill topology first
         self._db["topology"][0]=self.tree.tree.write()
 
+        ## fill in a key for internal nodes
+        self._db["nodekey"][:]=np.array(list(set([i.idx 
+            for i in self.tree.tree.search_nodes()])-set([i.idx 
+            for i in self.tree.tree.get_leaves()])))
+
         ## iterate until until all tests are sampled
         tidx = 0
         for _ in range(self.ntests):
 
             ## get the next tree
-            itree = self.tree_generator.next()
+            itree, idict = self.tree_generator.next()
 
             ## store edge lengths for labels in node.idx order
-            edge_lengths = [
-                itree.tree.search_nodes(idx=i)[0].dist * 2 * self.Ne
-                for i in range(len(itree.get_edge_lengths()))]
+            edge_lengths = (idict.values()/max(idict.values()))*2*self.Ne
 
             ## get all admixture edges that can be drawn on this tree
             admixedges = get_all_admix_edges(itree)
@@ -715,6 +725,7 @@ class DataBase(object):
         batsize = 500
         endidx = startidx+min(batsize,(ntotal-startidx))
         ## pull a batch to run
+        bat_edge_lengths = self._db['edge_lengths'][startidx:endidx,]
         bat_Ne = self._db['Ne'][startidx:endidx,]
         bat_ad_sources = self._db['admix_sources'][startidx:endidx,]
         bat_ad_targets = self._db['admix_targets'][startidx:endidx,]
@@ -723,10 +734,20 @@ class DataBase(object):
         bat_ad_tend = self._db['admix_tend'][startidx:endidx,]
         bat_counts = np.zeros(shape=(np.shape(self._db['counts'][startidx:endidx])))
 
-        print(np.shape(bat_ad_tend))
-        print(bat_ad_tend[0:100])
+        trees=[]
+        for i in range(len(bat_edge_lengths)):
+            n=dict(set(zip(*[self._db["nodekey"],bat_edge_lengths[i]])))
+            tree=copy.deepcopy(self.tree)
+            for leaf in tree.tree.get_leaves():
+                for node in leaf.iter_ancestors():
+                    set_node_height(node,n[node.idx])
+            trees.append(tree)
 
         ## initialize a bunch of models
+        models = []
+        for i in range(batsize):
+            samp_edges=(bat_ad_sources[i][0],bat_ad_targets[i][0], bat_ad_tstart[i][0], bat_ad_tend[i][0],bat_ad_props[i][0])
+            models.append(Model(trees[i], admixture_edges=[samp_edges],Ne = bat_Ne[i]))
 
         ## wrap the run in a try statement to ensure we properly shutdown
         ## and cleanup on exit or interrupt. 
@@ -980,7 +1001,7 @@ def node_slider(ttree):
 
     return ctree
 
-def exp_sampler(ttree, betaval = 1,returndict = None):
+def exp_sampler(ttree, betaval = 1,returndict = "both"):
     """
     Takes an input topology and samples branch lengths
     
@@ -1142,3 +1163,11 @@ def get_all_admix_edges(ttree):
                 if top_bin > low_bin:
                     intervals[(snode.idx, dnode.idx)] = (low_bin, top_bin)
     return intervals
+
+def set_node_height(node,height):
+    """
+    set an ete3 node object at a particular height
+    """
+    childn=node.get_children()
+    for child in childn:
+        child.dist=height - child.height

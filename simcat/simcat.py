@@ -1,8 +1,8 @@
 #!/usr/bin/env python
 
 """
-Generate large database of site counts from coalescent simulations 
-based on msprime + toytree for using in machine learning algorithms. 
+Generate large database of site counts from coalescent simulations
+based on msprime + toytree for using in machine learning algorithms.
 """
 
 ## make py3 compatible
@@ -32,7 +32,8 @@ class Model(object):
     """
     A coalescent model for returning ms simulations. 
     """
-    def __init__(self, 
+    def __init__(
+        self, 
         tree,
         admixture_edges=None,
         Ne=int(1e5),
@@ -150,12 +151,12 @@ class Model(object):
                 edge_min = int(interval[0] * 2. * self.Ne)
                 edge_max = int(interval[1] * 2. * self.Ne)
                 mtimes = np.sort(
-                    np.random.uniform(edge_min, edge_max, self.nreps*2)
+                    np.random.uniform(edge_min, edge_max, self.nreps * 2)
                     .reshape((self.nreps, 2)), axis=1).astype(int)
                 self.test_values[idx] = {"mrates": mrates, "mtimes": mtimes}
                 if self._debug:
                     print("uniform testvals mig:", 
-                         (edge_min, edge_max), (minmig, maxmig))
+                          (edge_min, edge_max), (minmig, maxmig))
             idx += 1
 
 
@@ -208,7 +209,7 @@ class Model(object):
                 ax1.fill(
                     boundaries[idx], 
                     (idx, idx), 
-                    (idx+0.5, idx+0.5),
+                    (idx + 0.5, idx + 0.5),
                     color=color, 
                     opacity=0.5)
             ax2.bars(np.histogram(mrates, bins=20), color=color, opacity=0.5)
@@ -259,8 +260,8 @@ class Model(object):
             demog.add(ms.MigrationRateChange(time[1], 0, children))
             if self._debug:
                 print('demog mig:', 
-                    (round(time[0], 4), round(time[1], 4), 
-                     round(rate, 4), children))
+                      (round(time[0], 4), round(time[1], 4), 
+                       round(rate, 4), children))
 
         ## sort events by time
         demog = sorted(list(demog), key=lambda x: x.time)
@@ -348,7 +349,7 @@ def count_matrix(quartsnps):
     add = np.uint64(1) 
     for idx in range(quartsnps.shape[0]):
         i = quartsnps[idx, :]
-        arr[(4*i[0])+i[1], (4*i[2])+i[3]] += add    
+        arr[(4 * i[0]) + i[1], (4 * i[2]) + i[3]] += add    
     return arr
 
 
@@ -435,7 +436,8 @@ class DataBase(object):
     force: bool (default=False)
         Force overwrite of existing database file.
     """
-    def __init__(self,
+    def __init__(
+        self,
         name,
         workdir,
         tree,
@@ -454,8 +456,8 @@ class DataBase(object):
         ## identify this set of simulations
         self.name = name
         self.workdir = (workdir or 
-            os.path.realpath(os.path.join('.', "databases")))
-        self.database = os.path.join(workdir, self.name+".hdf5")
+                        os.path.realpath(os.path.join('.', "databases")))
+        self.database = os.path.join(workdir, self.name + ".hdf5")
         self._db = None  # open/closed file handle of self.database
         self._debug = debug
         self._quiet = quiet
@@ -480,7 +482,7 @@ class DataBase(object):
             "cores": 0, 
             "threads": 2,
             "pids": {},
-            }        
+        }
 
         ## a generator that returns branch lengthed trees
         self.tree_generator = self._get_tree_generator()
@@ -522,7 +524,7 @@ class DataBase(object):
         self._debug_report()
         if not self._quiet:
             print("stored {} labels to {}"
-                .format(self.nstored_values, self.database))
+                  .format(self.nstored_values, self.database))
 
         ## Close the database. It is now ready to be filled with .run()
         ## which will run until all tests are finished in the database. We 
@@ -647,15 +649,13 @@ class DataBase(object):
                 ## initalize a Model to sample range of parameters on this edge
                 ## model counts array shape: (ntests*nreps, nquarts, 16, 16)
                 admixlist = [(i[0][0], i[0][1], None, None, None) 
-                    for i in event]
+                             for i in event]
 
                 ## for help 
                 if self._debug:
                     print('admixlist', admixlist)
 
-                model = Model(itree, 
-                    admixture_edges=admixlist,
-                    )
+                model = Model(itree, admixture_edges=admixlist)
 
                 ## store labels for this sim (1 x nreps)
                 self._db["edge_lengths"][eidx:eidx+self.nreps] = edge_lengths

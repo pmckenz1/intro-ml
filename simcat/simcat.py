@@ -5,7 +5,7 @@ Generate large database of site counts from coalescent simulations
 based on msprime + toytree for using in machine learning algorithms.
 """
 
-## make py3 compatible
+## import to make py3 compatible
 from __future__ import print_function
 from builtins import range
 
@@ -28,13 +28,10 @@ from scipy.special import comb
 import ipyrad as ip
 
 
-class Modelr(Model):
-    """ subclass of model with simpler and faster functions"""
-
-
-# notes on work in progress, Ne and theta need to be resolved,
-# if theta is sampled then Ne needs be generated on the fly as
-# a division of theta, and passed to simulate.
+# notes on work in progress: 
+    # Ne and theta need to be resolved,
+    # if theta is sampled, then Ne needs be generated on the fly as
+    # a division of theta, and passed to simulate.
 class Model(object):
     """
     A coalescent model for returning ms simulations.
@@ -50,27 +47,34 @@ class Model(object):
         debug=False,
         ):
         """
-        An object for running simulations to attain genotype matrices for many
-        independent runs to sample Nrep SNPs.
+        Takes an input topology and generates ntests parameter sets for running
+        msprime simulations which are stored in the test_values dictionary. The
+        .run() command can be used to execute simulations to fill a count
+        matrices stored in .counts. 
 
         Parameters:
         -----------
         tree: (str)
-            A newick string representation of a species tree with edges in
-            units of generations.
+            A newick string or Toytree object of a species tree with edges in
+            coalescent units.
 
         admixture_edges (list):
             A list of admixture events in the format:
-            (source, dest, start, end, rate).
+            (source, dest, start, end, rate). If start, end, or rate are 
+            empty then they will be sampled from possible points given the 
+            topology of the tree. 
 
         theta (int or tuple):
-            Mutation parameter
+            Mutation parameter.
 
         nsnps (int):
-            Number of unlinked SNPs simulated.
+            Number of unlinked SNPs simulated (e.g., counts is (nsnps, 16, 16))
 
         ntests (int):
-            Number of admixture events to sample.
+            Number of parameter sets to sample, where _theta is sampled, and 
+            for each admixture edge a migration start, migration end, and 
+            migration rate is sampled. The counts array is expanded to be 
+            (ntests, nsnps, 16, 16)
         """
         # init random seed
         if seed:
@@ -81,10 +85,19 @@ class Model(object):
 
         # store sim params as attrs
         if isinstance(theta, (float, int)):
-            self.theta = (theta, theta)
+            self._rtheta = (theta, theta)
         else:
-            self.theta = (min(theta), max(theta))
-        self.mut = 1e-5
+            self._rtheta = (min(theta), max(theta))
+
+        # fixed _mut; _theta sampled from theta; and _Ne computed for diploid
+        self._mut = 1e-5
+        self._theta = None
+
+        @property
+        def _Ne(self):
+            return (self._theta / self._mut) / 4.
+
+        # dimension arguments
         self.nsnps = nsnps
         self.ntests = ntests
 
@@ -131,36 +144,49 @@ class Model(object):
 
     def _get_test_values(self): 
         """
-        Generates mrates and mtimes arrays for a range of values (ns) where
-        migration rate is uniformly sampled, and its start and end points are
-        uniformly sampled but contained within 0.05-0.95% of the branch length. 
-        Rates are drawn uniformly between 0.0 and 0.95. 
+        Generates mrates, mtimes, and thetas arrays for simulations. 
+
+        migration times are uniformly sampled between start and end points that
+        are constrained by the overlap in edge lengths, which is automatically
+        inferred from 'get_all_admix_edges()'. migration rates are drawn 
+        uniformly between 0.0 and 0.5. thetas are drawn uniformly between 
+        theta0 and theta1, and Ne is just theta divided by a constant. 
         """
         ## init a dictionary for storing arrays for each admixture scenario
         self.test_values = {}
 
-        ## iterate over events in admixture list
+        ## store sampled theta values across ntests
+        self.test_values["thetas"] = np.random.uniform(
+            self._rtheta[0], self._rtheta[1], self.ntests)
+        _temp_Nes = (self.test_values["thetas"] / self._mut) / 4.
+
+        ## store evt: (mrates, mtimes) for each admix event in admixture list
+        intervals = get_all_admix_edges(self.tree)
         idx = 0
         for event in self.admixture_edges:
-            ## sample thetas
-            thetas = np.random.uniform(
-                self.theta[0], self.theta[1], self.ntests)
-            popnes = np.array((thetas / self.mut) / 4.).astype(int)
-            print(popnes)
 
             ## if times and rate were provided then use em.
             if all((i is not None for i in event[-3:])):
                 mrates = np.repeat(event[4], self.ntests)
-                mtimes = np.stack([
-                    event[2] * 2 * popnes,
-                    event[3] * 2 * popnes], axis=1,
-                    )
-                # np.repeat(event[2] * 2. * self.Ne, self.ntests),
-                # np.repeat(event[3] * 2. * self.Ne, self.ntests)], axis=1)
+
+                ## raise an error if mtime is not possible
+                try:
+                    ival = intervals[(event[0], event[1])]
+                    if (event[2] > ival[0]) and (event[3] < ival[1]):
+
+                        ## record timing in units of 2N
+                        mtimes = np.stack([
+                            event[2] * 2 * _temp_Nes,
+                            event[3] * 2 * _temp_Nes,
+                            ], axis=1,
+                        )
+                except IndexError:
+                    raise Exception("bad migration interval")
+
+                ## store migration arrays
                 self.test_values[idx] = {
                     "mrates": mrates, 
                     "mtimes": mtimes, 
-                    "thetas": thetas,
                     }
 
             ## otherwise generate uniform values across edges
@@ -170,11 +196,12 @@ class Model(object):
                 maxmig = 0.5
                 mrates = np.random.uniform(minmig, maxmig, self.ntests)
 
-                ## get divergence times from source start to end
-                self._intervals = get_all_admix_edges(self.tree)                
+                ## get divergence times from source start to end                
                 snode = self.tree.tree.search_nodes(idx=event[0])[0]
                 dnode = self.tree.tree.search_nodes(idx=event[1])[0]
-                interval = self._intervals[snode.idx, dnode.idx]
+                interval = intervals[snode.idx, dnode.idx]
+
+                ## interval is in units of bls, 
                 edge_min = int(interval[0] * 2. * self.Ne)
                 edge_max = int(interval[1] * 2. * self.Ne)
                 mtimes = np.sort(
@@ -183,7 +210,6 @@ class Model(object):
                 self.test_values[idx] = {
                     "mrates": mrates, 
                     "mtimes": mtimes,
-                    "thetas": thetas,
                     }
                 if self._debug:
                     print("uniform testvals mig:", 
@@ -205,7 +231,7 @@ class Model(object):
             xlabel="migration durations", 
             ylabel="simulation index",
             xmin=0, 
-            xmax=self.tree.tree.height * 2 * self.Ne)
+            xmax=self.tree.tree.height * 2 * self._Ne)
         ax2 = canvas.cartesian(
             grid=(1, 3, 2), 
             xlabel="proportion migrants", 
@@ -249,7 +275,7 @@ class Model(object):
 
 
     ## functions to build simulation options 
-    def _get_demography(self, idx):
+    def _get_demography(self):
         """
         returns demography scenario based on an input tree and admixture
         edge list with events in the format (source, dest, start, end, rate)
@@ -271,17 +297,18 @@ class Model(object):
             if node.children:
                 dest = min([i._schild for i in node.children])
                 source = max([i._schild for i in node.children])
-                time = int(node.height * 2. * self.Ne)
+                time = int(node.height * 2. * self._Ne)
                 demog.add(ms.MassMigration(time, source, dest))
                 if self._debug:
                     print('demog div:', (time, source, dest))
 
         ## Add migration edges
-        for key in self.test_values:
-            mdict = self.test_values[key]
-            time = mdict['mtimes'][idx]
-            rate = mdict['mrates'][idx]
-            source, dest = self.admixture_edges[key][:2]
+        aedges = len(set(self.test_values.keys()) - set(["thetas"]))
+        for evt in range(aedges):
+            rate = self._mrates[evt]
+            time = self._mtimes[evt]
+            #mdict = self.test_values[key]
+            source, dest = self.admixture_edges[evt][:2]
 
             ## rename nodes at time of admix in case divergences renamed them
             snode = self.tree.tree.search_nodes(idx=source)[0]
@@ -291,8 +318,12 @@ class Model(object):
             demog.add(ms.MigrationRateChange(time[1], 0, children))
             if self._debug:
                 print('demog mig:', 
-                      (round(time[0], 4), round(time[1], 4), 
-                       round(rate, 4), children))
+                      (int(time[0] * 2. * self._Ne),
+                       int(time[1] * 2. * self._Ne), 
+                       round(rate, 4), children),
+                      self._Ne, 
+                      time[0], time[1],
+                      )
 
         ## sort events by time
         demog = sorted(list(demog), key=lambda x: x.time)
@@ -306,7 +337,7 @@ class Model(object):
         returns population_configurations for N tips of a tree
         """
         population_configurations = [
-            ms.PopulationConfiguration(sample_size=1, initial_size=self.Ne)
+            ms.PopulationConfiguration(sample_size=1, initial_size=self._Ne)
             for ntip in range(self.ntips)]
         return population_configurations
 
@@ -315,14 +346,21 @@ class Model(object):
         """
         performs simulations with params varied across input values.
         """       
-        ## set up simulation
+        ## store _temp values for this idx simulation
         migmat = np.zeros((self.ntips, self.ntips), dtype=int).tolist()
+        self._Ne = int((self.test_values["thetas"][idx] / self._mut) / 4.)
+        self._mtimes = [self.test_values[evt]['mtimes'][idx] for evt in 
+                        range(len(self.admixture_edges))] 
+        self._mrates = [self.test_values[evt]['mrates'][idx] for evt in 
+                        range(len(self.admixture_edges))]         
+
+        ## build msprime simulation
         sim = ms.simulate(
             num_replicates=self.nsnps * 100,  # 100X since some sims are empty
-            mutation_rate=self.mut,
+            mutation_rate=self._mut,
             migration_matrix=migmat,
             population_configurations=self._get_popconfig(),
-            demographic_events=self._get_demography(idx)
+            demographic_events=self._get_demography()
         )
         return sim
 
@@ -368,6 +406,13 @@ class Model(object):
                 quartsnps = snparr[:, currquart]
                 self.counts[ridx, quartidx] = count_matrix(quartsnps)
                 quartidx += 1
+
+
+
+
+class Modelr(Model):
+    """ subclass of model with simpler and faster functions"""
+    pass
 
 
 ## jitted functions for running super fast -----------------
@@ -987,6 +1032,17 @@ def node_slider(ttree):
         node.dist = node.dist / float(mod)
 
     return ctree
+
+
+
+def node_multiplier(ttree, multiplier):
+    # make tree height = 1 * rheight
+    ctree = copy.deepcopy(ttree)
+    _height = ctree.tree.height
+    for node in ctree.tree.traverse():
+        node.dist = (node.dist / _height) * multiplier
+    return ctree
+
 
 
 ### Convenience functions on toytrees

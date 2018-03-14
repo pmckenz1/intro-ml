@@ -28,34 +28,35 @@ from scipy.special import comb
 import ipyrad as ip
 
 
-
 class Modelr(object):
     pass
 
 
-## notes on work in progress, Ne and theta need to be resolved, 
-## if theta is sampled then Ne needs be generated on the fly as
-## a division of theta, and passed to simulate.
+# notes on work in progress, Ne and theta need to be resolved,
+# if theta is sampled then Ne needs be generated on the fly as
+# a division of theta, and passed to simulate.
 class Model(object):
     """
-    A coalescent model for returning ms simulations. 
+    A coalescent model for returning ms simulations.
     """
-    def __init__(self, 
+    def __init__(
+        self,
         tree,
         admixture_edges=None,
         theta=0.01,
         nsnps=1000,
         ntests=10,
         seed=None,
-        debug=False):
+        debug=False
+        ):
         """
         An object for running simulations to attain genotype matrices for many
-        independent runs to sample Nrep SNPs. 
+        independent runs to sample Nrep SNPs.
 
         Parameters:
         -----------
         tree: (str)
-            A newick string representation of a species tree with edges in 
+            A newick string representation of a species tree with edges in
             units of generations.
 
         admixture_edges (list):
@@ -66,32 +67,31 @@ class Model(object):
             Mutation parameter
 
         nsnps (int):
-            Number of unlinked SNPs simulated. 
+            Number of unlinked SNPs simulated.
 
         ntests (int):
             Number of admixture events to sample.
         """
-        ## init random seed
+        # init random seed
         if seed:
             np.random.seed(seed)
 
-        ## hidden argument to turn on debugging
+        # hidden argument to turn on debugging
         self._debug = debug
 
-        ## store sim params as attrs
+        # store sim params as attrs
         if isinstance(theta, (float, int)):
             self.theta = (theta, theta)
         else:
             self.theta = (min(theta), max(theta))
         self.mut = 1e-5
-        #self.Ne = 
         self.nsnps = nsnps
         self.ntests = ntests
 
-        ## the counts array (result) is filled by .run()
+        # the counts array (result) is filled by .run()
         self.counts = None
 
-        ## parse the input tree
+        # parse the input tree
         if isinstance(tree, toytree.tree):
             self.tree = tree
         elif isinstance(tree, str):
@@ -100,19 +100,19 @@ class Model(object):
             raise TypeError("input tree must be newick str or Toytree object")
         self.ntips = len(self.tree)
 
-        ## store node.name as node.idx, save old names in a dict.
+        # store node.name as node.idx, save old names in a dict.
         self.namedict = {}
         for node in self.tree.tree.traverse():
             if node.is_leaf():
-                ## store old name
+                # store old name
                 self.namedict[str(node.idx)] = node.name
-                ## set new name
+                # set new name
                 node.name = str(node.idx)
 
-        ## parse the input admixture edges. It should a list of tuples, or list
-        ## of lists where each element has five values. 
+        # parse the input admixture edges. It should a list of tuples, or list
+        # of lists where each element has five values.
         if admixture_edges:
-            ## single list or tuple: [a, b, c, d, e] or (a, b, c, d, e)
+            # single list or tuple: [a, b, c, d, e] or (a, b, c, d, e)
             if isinstance(admixture_edges[0], (str, int)):
                 admixture_edges = [admixture_edges]
         else:

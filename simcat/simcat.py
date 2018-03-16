@@ -788,12 +788,12 @@ class DataBase(object):
         ## which call ._get_test_values() to generate all simulation scenarios
         ## which are then entered into the database for the next nreps sims
         self._fill_fixed_tree_database_labels()
-
-        ## print info about the database in debug mode
-        self._debug_report()
         if not self._quiet:
             print("stored {} labels to {}"
                   .format(self.nstored_values, self.database))
+
+        ## print info about the database in debug mode
+        self._debug_report()
 
         ## Close the database. It is now ready to be filled with .run()
         ## which will run until all tests are finished in the database. We 

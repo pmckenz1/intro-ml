@@ -48,9 +48,13 @@ class Model(object):
         ntests=10,
         nreps=1,
         seed=None,
+        #as_ints=False,
         debug=False,
         ):
         """
+        An object used for demonstration and testing only. The real simulations
+        use the similar object Simulator.
+
         Takes an input topology with edge lengths in coalescent units (2N) 
         entered as either a newick string or as a Toytree.tree object,
         and generates 'ntests' parameter sets for running msprime simulations 
@@ -119,6 +123,11 @@ class Model(object):
         else:
             raise TypeError("input tree must be newick str or Toytree object")
         self.ntips = len(self.tree)
+
+        ## storage for output
+        self.nquarts = int(comb(N=self.ntips, k=4))  # scipy.special.comb
+        self.counts = np.zeros(
+            (self.ntests * self.nreps, self.nquarts, 16, 16), dtype=np.float32)
 
         # store node.name as node.idx, save old names in a dict.
         self.namedict = {}
@@ -200,10 +209,7 @@ class Model(object):
 
             ## otherwise generate uniform values across edges
             else:        
-                ## get migration rates from zero to ~full
-                minmig = 0.0
-                maxmig = 0.99
-                #mrates = np.random.uniform(minmig, maxmig, self.ntests)
+                ## get migration rates from exponential
                 mrates = np.random.exponential(0.1, self.ntests)
                 mrates[mrates > 0.99] = 0.99
 
@@ -213,11 +219,9 @@ class Model(object):
                 ival = intervals[snode.idx, dnode.idx]
 
                 ## interval is stored as an int, and is bls in generations
-                #edge_min = int(interval[0])  # * 2. * self._Ne)
-                #edge_max = int(interval[1])  # * 2. * self._Ne)
                 ui = np.random.uniform(ival[0], ival[1], self.ntests * 2)
                 ui = ui.reshape((self.ntests, 2))
-                mtimes = np.sort(ui, axis=1)  # .astype(int)
+                mtimes = np.sort(ui, axis=1)  
 
                 self.test_values[idx] = {
                     "mrates": mrates, 
@@ -225,7 +229,7 @@ class Model(object):
                     }
                 if self._debug:
                     print("uniform testvals mig:", 
-                          (ival[0], ival[1]), (minmig, maxmig))
+                          (ival[0], ival[1]), (mrates[0], mrates[1]))
             idx += 1
 
 
@@ -381,10 +385,6 @@ class Model(object):
         """
         run and parse results for nsamples simulations.
         """
-        ## storage for output
-        self.nquarts = int(comb(N=self.ntips, k=4))  # scipy.special.comb
-        self.counts = np.zeros(
-            (self.ntests * self.nreps, self.nquarts, 16, 16), dtype=np.uint64)
 
         ## iterate over ntests (different sampled simulation parameters)
         gidx = 0
@@ -397,13 +397,13 @@ class Model(object):
                 sims = self._simulate(ridx)
 
                 ## store results (nsnps, ntips); def. 1000 SNPs
-                snparr = np.zeros((self.nsnps, self.ntips), dtype=np.uint16)
+                snparr = np.zeros((self.nsnps, self.ntips), dtype=np.int32)
 
                 ## continue until all SNPs are sampled from generator
                 fidx = 0
                 while fidx < self.nsnps:
                     ## get genotypes and convert to {0,1,2,3} under JC
-                    bingenos = sims.next().genotype_matrix()
+                    bingenos = next(sims).genotype_matrix()
 
                     ## count as 16x16 matrix and store to snparr
                     if bingenos.size:
@@ -419,8 +419,11 @@ class Model(object):
                 for currquart in qiter:
                     ## cols indices match tip labels b/c we named tips node.idx
                     quartsnps = snparr[:, currquart]
-                    self.counts[gidx, quartidx] = count_matrix(quartsnps)
+                    self.counts[gidx, quartidx] = count_matrix_float(quartsnps)
                     quartidx += 1
+
+                # scale by max for this rep
+                self.counts[gidx, ...] /= self.counts[gidx, ...].max()
                 gidx += 1
 
 
@@ -468,7 +471,7 @@ class Simulator(object):
             self.nquarts = int(comb(N=self.ntips, k=4))  # scipy.special.comb
             self.nvalues = self.slice1 - self.slice0
             self.counts = np.zeros(
-                (self.nvalues, self.nquarts, 16, 16), dtype=np.uint16)
+                (self.nvalues, self.nquarts, 16, 16), dtype=np.float32) 
 
             ## calls run and returns filled counts matrix
             if run:
@@ -596,13 +599,13 @@ class Simulator(object):
             sims = self._simulate(idx)
 
             ## store results (nsnps, ntips); def. 1000 SNPs
-            snparr = np.zeros((self.nsnps, self.ntips), dtype=np.uint16)
+            snparr = np.zeros((self.nsnps, self.ntips), dtype=np.int32)
 
             ## continue until all SNPs are sampled from generator
             fidx = 0
             while fidx < self.nsnps:
                 ## get genotypes and convert to {0,1,2,3} under JC
-                bingenos = sims.next().genotype_matrix()
+                bingenos = next(sims).genotype_matrix()
 
                 ## count as 16x16 matrix and store to snparr
                 if bingenos.size:
@@ -618,7 +621,8 @@ class Simulator(object):
             for currquart in qiter:
                 ## cols indices match tip labels b/c we named tips node.idx
                 quartsnps = snparr[:, currquart]
-                self.counts[idx, quartidx] = count_matrix(quartsnps)
+                #self.counts[idx, quartidx] = count_matrix(quartsnps)
+                self.counts[idx, quartidx] = count_matrix_float(quartsnps)
                 quartidx += 1
 
 
@@ -867,7 +871,7 @@ class DataBase(object):
         ## store count matrices
         self._db.create_dataset("counts", 
             shape=(nvalues, nquarts, 16, 16),
-            dtype=np.uint32)
+            dtype=np.float32)
 
         ## store node heights
         internal_nodes = sum(
@@ -1337,14 +1341,14 @@ def get_all_admix_edges(ttree):
     intervals = {}
     for snode in ttree.tree.traverse():
         for dnode in ttree.tree.traverse():
-            if not snode.is_root() and (snode != dnode):
+            if not any([snode.is_root(), dnode.is_root(), dnode == snode]):
                 ## check for overlap
                 smin, smax = snode.interval
                 dmin, dmax = dnode.interval
 
                 ## find if nodes have interval where admixture can occur
-                low_bin = max(smin, dmin)
-                top_bin = min(smax, dmax)
+                low_bin = np.max([smin, dmin])
+                top_bin = np.min([smax, dmax])
                 if top_bin > low_bin:
                     intervals[(snode.idx, dnode.idx)] = (low_bin, top_bin)
     return intervals
@@ -1364,7 +1368,7 @@ def _tile_reps(array, nreps):
 ############################################################################
 ## jitted functions for running super fast -----------------
 @numba.jit(nopython=True)
-def count_matrix(quartsnps):
+def count_matrix_int(quartsnps):
     """
     return a 16x16 matrix of site counts from snparr
     """
@@ -1374,6 +1378,19 @@ def count_matrix(quartsnps):
         i = quartsnps[idx, :]
         arr[(4 * i[0]) + i[1], (4 * i[2]) + i[3]] += add    
     return arr
+
+
+@numba.jit(nopython=True)
+def count_matrix_float(quartsnps):
+    """
+    return a 16x16 matrix of site counts from snparr
+    """
+    arr = np.zeros((16, 16), dtype=np.float32)
+    add = np.float32(1)
+    for idx in range(quartsnps.shape[0]):
+        i = quartsnps[idx, :]
+        arr[(4 * i[0]) + i[1], (4 * i[2]) + i[3]] += add    
+    return arr  # / arr.max()    
 
 
 @numba.jit(nopython=True)

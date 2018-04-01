@@ -5,11 +5,11 @@ Generate large database of site counts from coalescent simulations
 based on msprime + toytree for using in machine learning algorithms.
 """
 
-## import to make py3 compatible
+# imports for py3 compatibility
 from __future__ import print_function
-from builtins import range
+from builtins import range, input
 
-## imports
+# imports
 import os
 import sys
 import h5py
@@ -35,7 +35,7 @@ class SimcatError(Exception):
 
 
 #######################################################
-class Model(object):
+class Model:
     """
     A coalescent model for returning ms simulations.
     """
@@ -48,7 +48,6 @@ class Model(object):
         ntests=10,
         nreps=1,
         seed=None,
-        #as_ints=False,
         debug=False,
         ):
         """
@@ -316,7 +315,8 @@ class Model(object):
                 time = node.height * 2. * self._Ne  
                 demog.add(ms.MassMigration(time, source, dest))
                 if self._debug:
-                    print('demog div:', (time, source, dest))
+                    print('demog div:', (int(time), source, dest), 
+                        file=sys.stderr)
 
         ## Add migration edges
         for evt in range(self.aedges):
@@ -337,12 +337,11 @@ class Model(object):
                     round(rate, 4), 
                     children,
                     self._Ne, 
+                    file=sys.stderr,
                     )
 
         ## sort events by time
         demog = sorted(list(demog), key=lambda x: x.time)
-        if self._debug:
-            print("")
         return demog
 
 
@@ -385,7 +384,6 @@ class Model(object):
         """
         run and parse results for nsamples simulations.
         """
-
         ## iterate over ntests (different sampled simulation parameters)
         gidx = 0
         for ridx in range(self.ntests):
@@ -422,14 +420,14 @@ class Model(object):
                     self.counts[gidx, quartidx] = count_matrix_float(quartsnps)
                     quartidx += 1
 
-                # scale by max for this rep
+                # scale by max count for this rep
                 self.counts[gidx, ...] /= self.counts[gidx, ...].max()
                 gidx += 1
 
 
 
 #############################################################################
-class Simulator(object):
+class Simulator:
     """ 
     This is the object that runs on the engines by loading data from the HDF5,
     building the msprime simulations calls, and then calling .run() to fill
@@ -546,7 +544,8 @@ class Simulator(object):
                 
                 ## debug
                 if self._debug:
-                    print('demog div:', (time, source, dest))
+                    print('demog div:', (int(time), source, dest), 
+                        file=sys.stderr)
 
         ## Add migration edges
         for evt in range(self.aedges):
@@ -571,6 +570,7 @@ class Simulator(object):
                     round(rate, 4), 
                     children,
                     self._Ne,
+                    file=sys.stderr,
                     )
 
         ## sort events by time
@@ -621,14 +621,18 @@ class Simulator(object):
             for currquart in qiter:
                 ## cols indices match tip labels b/c we named tips node.idx
                 quartsnps = snparr[:, currquart]
-                #self.counts[idx, quartidx] = count_matrix(quartsnps)
+
                 self.counts[idx, quartidx] = count_matrix_float(quartsnps)
                 quartidx += 1
+
+            # re-scale by max count for this rep
+            self.counts[idx, ...] /= self.counts[idx, ...].max()
+
 
 
 
 ############################################################################
-class DataBase(object):
+class DataBase:
     """
     An object to parallelize simulations over many parameter settings
     and store finished reps in a HDF5 database. The number of labeled tests
@@ -707,10 +711,10 @@ class DataBase(object):
         tree,
         edge_function=None,
         nsnps=1000,
-        nedges=0,            #
-        ntrees=100,          #
-        ntests=100,          #
-        nreps=100,           #
+        nedges=0,
+        ntrees=1,
+        ntests=1,
+        nreps=1,
         theta=0.01,
         seed=123,
         force=False,
@@ -767,8 +771,8 @@ class DataBase(object):
         ## create database in 'w-' mode to prevent overwriting
         if os.path.exists(self.database):
             if force:
-                ## exists and destroy it
-                answer = raw_input(
+                ## exists and destroy it.
+                answer = input(
                     "Do you really want to overwrite the database? (y/n) ")
                 if answer in ('yes', 'y', "Y"):
                     os.remove(self.database)
@@ -836,7 +840,7 @@ class DataBase(object):
         """
         while 1:
             if self.edge_function == "node_slider":
-                yield node_slider(self.tree)
+                yield self.tree.jitter.node_slider()
             elif self.edge_function == "poisson":
                 raise NotImplementedError("Not yet supported")
             else:
@@ -914,7 +918,7 @@ class DataBase(object):
         tidx = 0
         for _ in range(self.ntrees):
             ## sample tree and save new internal node heights in idx order
-            itree = self.tree_generator.next()
+            itree = next(self.tree_generator)
             node_heights = [           
                 itree.tree.search_nodes(idx=i)[0].height
                 for i in range(sum(1 for i in itree.tree.traverse()))
@@ -998,7 +1002,7 @@ class DataBase(object):
         done = self.checkpoint
         while 1:
             ## gather finished jobs
-            finished = (i for i, j in asyncs.items() if j.ready())
+            finished = [i for i, j in asyncs.items() if j.ready()]
 
             ## iterate over finished list and insert results
             for job in finished:
@@ -1029,7 +1033,7 @@ class DataBase(object):
 
     ## THE MAIN RUN COMMANDS ----------------------------------------
     ## Distributes parallel jobs and wraps functions for convenient cleanup.
-    def run2(self, ipyclient=None, quiet=False):
+    def run(self, ipyclient=None, quiet=False):
         """
         Run inference in
 
@@ -1073,10 +1077,12 @@ class DataBase(object):
 
         ## handle exceptions so they will be raised after we clean up below
         except KeyboardInterrupt as inst:
-            print("\nKeyboard Interrupt by user. Cleaning up...")
+            print("\nKeyboard Interrupt by user. Cleaning up...", 
+                file=sys.stderr)
 
         except Exception as inst:
-            print("\nUnknown exception encountered: {}".format(inst))
+            print("\nUnknown exception encountered: {}".format(inst), 
+                file=sys.stderr)
 
         ## close client when done or interrupted
         finally:
@@ -1122,214 +1128,12 @@ class DataBase(object):
 
 
 
-    def run(self, force=False):
-        """
-        Distribute simulations across a parallel Client. If continuing
-        a previous run then any unfinished simulation will be queued up
-        to run. 
-        """
-        
-        def _add_mat(arr, numberdone):
-            """
-            Add one matrix to the HDF5 'counts' group. Collette book page 39.
-            """
-            counts_set[numberdone,:,:,:] = arr.astype(int)
-            return(numberdone+1)
-
-        def _add_quarts(arr, numberdone):
-            """
-            Add one matrix to the HDF5 'counts' group. Collette book page 39.
-            """
-            quarts_set[numberdone,:,:] = arr.astype(int)
-            return(numberdone + 1)
-
-        def _done(numberdone,nquarts):
-            """
-            Resize your HDF5 'counts' group at the end to the same length 
-            as filled count matrices. Collette book page 40.
-            """
-            counts_set.resize((numberdone,nquarts,16,16))
-            quarts_set.resize((numberdone,nquarts,4))
-            
-        
-        ## need to get ipyclient feature working
-        #run(self, ipyclient, force=False):
-        
-        
-        mydatabase = h5py.File(self.path, mode='r+')
-        sizeargs = mydatabase['args'].len()
-        
-        ## Does a counts group already exist in your database file?
-        try:
-            mydatabase['counts']
-        except:
-            ## if 'counts' doesn't exist
-            numberdone = 0 # will adjust this at the end of the loop
-            countexists = False
-            ## initialize the group
-            counts_set = mydatabase.create_dataset('counts',(1,self.nquarts, 16,16),maxshape = (None, self.nquarts, 16, 16), chunks = (4,self.nquarts,16,16),dtype=int)
-            quarts_set = mydatabase.create_dataset('quarts',(1,self.nquarts,4),maxshape = (None,self.nquarts, 4), chunks=(1,self.nquarts,4),dtype=int)
-        else:
-            numberdone = len(mydatabase['counts'])
-            countexists = True
-        
-
-        
-        trigger = 1 # will change this to 0 once we are done
-
-        ## initialize client
-        c = ipp.Client()
-        lbview = c.load_balanced_view()
-        
-        while trigger:
-            argsleft = sizeargs - numberdone # fill this at the beginning of each loop
-
-            if argsleft > 100:
-                windowsize = 100
-            else:
-                windowsize = argsleft
-
-            ## create empty dataset to hold your set of int paras
-            argsints = np.empty((windowsize,6),dtype=int)
-            ## fill the dataset with the window of values you want (ints)
-            mydatabase['args'].read_direct(argsints, np.s_[numberdone:(numberdone+windowsize),[0,1,2,8,10,12]])
-            ## create empty dataset to hold your set of float paras
-            argsflts = np.empty((windowsize,4),dtype=float)
-            ## fill the dataset with the window of values you want (floats)
-            mydatabase['args'].read_direct(argsflts, np.s_[numberdone:(numberdone+windowsize),[5,6,7,9]])
-
-            # resize this for writing the current window
-            counts_set.resize((len(counts_set)+windowsize,self.nquarts,16,16))
-            quarts_set.resize((len(quarts_set)+windowsize,self.nquarts,4))
-            
-            #start parallel computing part
-            
-            def parallel_model(trees,argsints,argsflts,windowsize,nquarts):
-                """
-                This takes parameters for a big window of parameters and runs a model on each parameter sample.
-                This is the function to run using ipyparallel
-                Returns an array of shape = [windowsize,16,16]
-                """
-                print("inside model run function")
-                import numpy as np
-                store_counts_parallel = np.empty([windowsize,nquarts,16,16])
-                store_quarts_parallel = np.empty([windowsize,nquarts,4])
-                for idx in range(windowsize):
-                    treenum, sourcebr, destbr, Ne, nsnps, seed = argsints[idx,:]
-                    mtimerecent, mtimedistant, mrate, mut = argsflts[idx,:]
-                    mod = Model(tree = trees[treenum],
-                                admixture_edges = [(sourcebr,destbr,mtimerecent,mtimedistant,mrate)],
-                                Ne = Ne,
-                                nsnps = nsnps,
-                                mut = mut,
-                                seed = seed,
-                                nreps = 1)
-                    mod.run()
-                    store_counts_parallel[idx,:,:,:]=mod.counts
-                    store_quarts_parallel[idx,:,:]=mod.quarts 
-                return store_counts_parallel, store_quarts_parallel
-            #return([parallel_model,self.trees,argsints,argsflts,windowsize]) ## for debugging
-            
-            ## Set client to work
-            task = lbview.apply(parallel_model,self.trees,argsints,argsflts,windowsize,self.nquarts)
-            start = time.time()
-            while 1:
-                elapsed = datetime.timedelta(seconds=int(time.time()-start))
-                if not task.ready():
-                    time.sleep(0.1)
-                else:
-                    break
-            end = time.time()
-            print(end-start)
-            
-            ## Save the results from parallel
-            resultsarray, quartsarray = task.result()
-            
-            ## Now add all of our count matrices to HDF5
-            for resultsmatrix, quartsrow in zip(resultsarray, quartsarray):
-                _add_quarts(quartsrow,numberdone)
-                numberdone = _add_mat(resultsmatrix,numberdone)
-            
-            _done(numberdone,self.nquarts)
-            print(numberdone)
-            print(sizeargs)
-            ## Exits the loop if we're out of parameter samples in the database 'args' group
-            if numberdone == sizeargs:
-                trigger = 0
-        
-        mydatabase.close()
-        
-        ## wrapper for ipyclient to close nicely when interrupted
-        #pass
-        return("Done writing database with " + str(numberdone) + " count matrices.")
-
-
-
-###########################################################################
-def node_slider(ttree):
-    """
-    Returns a toytree copy with node heights modified while retaining the 
-    same topology but not necessarily node branching order. Node heights are
-    moved up or down uniformly between their parent and highest child node 
-    heights in 'levelorder' from root to tips. The total tree height is 
-    retained at 1.0, only relative edge lengths change.
-
-    ## for example run:
-    c, a = node_slide(ctree).draw(
-        width=400,
-        orient='down', 
-        node_labels='idx',
-        node_size=15,
-        tip_labels=False
-        );
-    a.show = True
-    a.x.show = False
-    a.y.ticks.show = True
-    """
-    ctree = copy.deepcopy(ttree)
-    for node in ctree.tree.traverse():
-
-        ## slide internal nodes 
-        if node.up and node.children:
-
-            ## get min and max slides
-            minjit = max([i.dist for i in node.children]) * 0.99
-            maxjit = (node.up.height * 0.99) - node.height
-            newheight = np.random.uniform(low=-minjit, high=maxjit)
-
-            ## slide children
-            for child in node.children:
-                child.dist += newheight
-
-            ## slide self to match
-            node.dist -= newheight
-
-    ## make max height = 1
-    #mod = ctree.tree.height
-    #for node in ctree.tree.traverse():
-    #    node.dist = node.dist / float(mod)
-
-    return ctree
-
-
-
-def node_multiplier(ttree, multiplier):
-    # make tree height = 1 * rheight
-    ctree = copy.deepcopy(ttree)
-    _height = ctree.tree.height
-    for node in ctree.tree.traverse():
-        node.dist = (node.dist / _height) * multiplier
-    return ctree
-
-
-
 ### Convenience functions on toytrees
 def get_all_admix_edges(ttree):
     """
     Find all possible admixture edges on a tree. Edges are unidirectional, 
     so the source and dest need to overlap in time interval.    
     """
-
     ## for all nodes map the potential admixture interval
     for snode in ttree.tree.traverse():
         if snode.is_root():
@@ -1354,8 +1158,8 @@ def get_all_admix_edges(ttree):
     return intervals
 
 
-
 def _tile_reps(array, nreps):
+    "used to fill labels in the database for replicates"
     ts = array.size
     nr = nreps
     result = np.array(

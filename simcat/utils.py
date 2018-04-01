@@ -1,10 +1,7 @@
 #!/usr/bin/env python
 
 import numpy as np
-try:
-    import toyplot
-except ImportError:
-    pass
+import toyplot
 
 
 _ISTRING = """

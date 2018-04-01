@@ -14,7 +14,7 @@ import os
 import sys
 import h5py
 import time
-import copy
+#import copy
 import numba
 import toyplot
 import toytree
@@ -840,7 +840,7 @@ class DataBase:
         """
         while 1:
             if self.edge_function == "node_slider":
-                yield self.tree.jitter.node_slider()
+                yield self.tree.mod.node_slider()
             elif self.edge_function == "poisson":
                 raise NotImplementedError("Not yet supported")
             else:
@@ -1032,10 +1032,10 @@ class DataBase:
 
 
     ## THE MAIN RUN COMMANDS ----------------------------------------
-    ## Distributes parallel jobs and wraps functions for convenient cleanup.
     def run(self, ipyclient=None, quiet=False):
         """
-        Run inference in
+        Distributes parallel jobs and wraps functions for convenient cleanup.
+        Fills all count matrices with simulated data. 
 
         Parameters
         ----------
@@ -1097,6 +1097,7 @@ class DataBase:
                         if ipyclient.queue_status()[engine_id]["tasks"]:
                             os.kill(pid, 2)
                         time.sleep(0.25)
+                    ipyclient.purge_everything()
 
             ## if exception during shutdown then we really screwed up
             except Exception as inst2:

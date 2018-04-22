@@ -14,7 +14,7 @@ import os
 import sys
 import h5py
 import time
-#import copy
+import copy
 import numba
 import toyplot
 import toytree
@@ -840,12 +840,195 @@ class DataBase:
         """
         while 1:
             if self.edge_function == "node_slider":
-                yield self.tree.mod.node_slider()
+                yield self._node_slider()
             elif self.edge_function == "poisson":
-                raise NotImplementedError("Not yet supported")
+                #raise NotImplementedError("Not yet supported")
+                yield self._exp_sampler(self.tree, returndict=None)
             else:
                 yield self.tree
 
+    def _node_slider(self):
+        """
+        Returns a toytree copy with node heights modified while retaining the 
+        same topology but not necessarily node branching order. Node heights are
+        moved up or down uniformly between their parent and highest child node 
+        heights in 'levelorder' from root to tips. The total tree height is 
+        retained at 1.0, only relative edge lengths change.
+        ## for example run:
+        c, a = node_slide(ctree).draw(
+            width=400,
+            orient='down', 
+            node_labels='idx',
+            node_size=15,
+            tip_labels=False
+            );
+        a.show = True
+        a.x.show = False
+        a.y.ticks.show = True
+        """
+        ctree = copy.deepcopy(self.tree)
+        for node in ctree.tree.traverse():
+
+            ## slide internal nodes 
+            if node.up and node.children:
+
+                ## get min and max slides
+                minjit = max([i.dist for i in node.children]) * 0.99
+                maxjit = (node.up.height * 0.99) - node.height
+                newheight = np.random.uniform(low=-minjit, high=maxjit)
+
+                ## slide children
+                for child in node.children:
+                    child.dist += newheight
+
+                ## slide self to match
+                node.dist -= newheight
+
+        ## make max height = 1
+        mod = ctree.tree.height
+        for node in ctree.tree.traverse():
+            node.dist = node.dist / float(mod)
+
+        return ctree
+
+    def _exp_sampler(self, betaval=1, returndict="only"):
+        """
+
+        # NOT WORKING
+
+
+        Takes an input topology and samples branch lengths
+        
+        Parameters:
+        -----------
+        toytreeobj: toytree
+            The topology for which we want to generate branch lengths
+        betaval: int/float (default=1)
+            The value of beta for the exponential distribution used to generate
+            branch lengths. This is inverse of rate parameter.
+        returndict: str (default=None)
+            If "only", returns only a dictionary matching nodes to heights.
+            If "both", returns toytree and dictionary as a tuple.
+        """
+        #ttree
+        #tree = tree.tree
+        tree = self.tree.copy()
+        def set_node_height(node,height):
+            childn=node.get_children()
+            for child in childn:
+                child.dist=height - child.height
+        testobj = []
+        
+        # we'll just append each step on each chain to these lists to keep track of where we've already been
+        allnodes = []
+        allnodeheights = []
+        
+        # d is deprecated (it was being returned) and stores the values for each chain
+        #d = {}
+        
+        ## testobj is our traversed full tree
+        for i in tree.tree.traverse():
+            testobj.append(i)
+        
+        # start by getting branch lengths for the longest branch
+        longbranch=sum([testobj[-1] in i for i in testobj]) # counts the number of subtrees containing last leaf, giving length of longest branch
+        longbranchnodes = np.random.exponential(betaval,longbranch) # segment lengths of longest branch
+        longbranchnodes[0] = np.random.uniform(low=0.0,high=longbranchnodes[0]) # cut the edge to the leaf with a uniform draw
+        
+        # get the heights of nodes along this longest (most nodes) branch
+        nodeheights = []
+        currheight = 0
+        for i in longbranchnodes:
+            currheight += i
+            nodeheights.append(currheight)
+        nodeheights = nodeheights[::-1]
+
+        # get indices to accompany long chain
+        lcidx = []
+        for i in testobj:
+            if testobj[-1] in i.get_leaves():
+                lcidx.append(i.idx)
+        #d['0heights'] = np.array(nodeheights)
+        #d['0nodes'] = np.array(lcidx[:-1])
+        
+        allnodes = allnodes + lcidx[:-1]
+        allnodeheights = allnodeheights + nodeheights
+        
+        # get other necessary chains to parse
+        other_chains = []
+        for i in range(len(testobj)-1)[::2]:
+            if len(testobj[i+1].get_leaves()) > 1:
+                other_chains.append(testobj[i+1])
+
+        # now solve
+        for chainnum in range(len(other_chains)): # parse the remaining chains one at a time
+            otr=other_chains[chainnum]
+            # find where this chain connects to the a chain we've already solved
+            firstancestor = otr.get_ancestors()[0].idx
+            # which nodeheight does this branch from
+            paridx=np.argmax(np.array(allnodes) == firstancestor) 
+            
+            # traverse the new 
+            testobj1 = []
+            nodes = []
+            
+            # save a list of nodes
+            for i in otr.traverse():
+                testobj1.append(i)
+            
+            # save the nodes that include the end of the chain (because branches out to other chains might not)
+            for i in testobj1:
+                if testobj1[-1] in i.get_leaves():
+                    nodes.append(i.idx)
+            
+            # make node index list to accompany lengths
+            lennodes= nodes[:-1] # don't save ending leaf index
+            lennodes.insert(0,firstancestor) # make chain list start with ancestor
+            
+            # figure out how many exponential draws to make for this chain (i.e. # new nodes + 1)
+            num_new_branches = sum([testobj1[-1] in i for i in testobj1])+1
+            
+            # initialize array to hold the draws
+            mir_lens = np.zeros((sum([testobj1[-1] in i for i in testobj1])+1))
+            # draw until we have a new set of exponential branch lengths that fit the constraints of our tree height
+            while not (sum(mir_lens[:(len(mir_lens)-1)]) < allnodeheights[paridx] and (sum(mir_lens) > allnodeheights[paridx])):
+                mir_lens = np.random.exponential(betaval,num_new_branches) ## length of longest branch
+            
+            # now let's save each node value as a height
+            mir_lens_heights = np.zeros((len(mir_lens)))
+            subsum = 0
+            for i in range(len(mir_lens)):
+                mir_lens_heights[i] = allnodeheights[paridx] - subsum
+                subsum = subsum + mir_lens[i]
+                
+            # add our new node indices with their heights to the full list
+            allnodes = list(allnodes) + list(lennodes)
+            allnodeheights = list(allnodeheights) + list(mir_lens_heights)
+            
+            #d[(str(chainnum+1)+"heights")] = mir_lens_heights
+            #d[(str(chainnum+1)+"nodes")] = np.array(lennodes)
+        
+        # make a final dictionary of node heights, eliminating redundancy
+        n = dict(set(zip(*[allnodes,allnodeheights])))
+        
+        if returndict == "only":
+            return n #d
+        elif returndict == "both":
+            # create the tree object
+            for leaf in tree.tree.get_leaves():
+                for node in leaf.iter_ancestors():
+                    set_node_height(node,n[node.idx])
+            return (tree,n)
+        else:
+            # create the tree object
+            for leaf in tree.tree.get_leaves():
+                for node in leaf.iter_ancestors():
+                    set_node_height(node,n[node.idx])
+                ## make max height = 1
+            mod = tree.tree.height
+            for node in tree.tree.traverse():
+                node.dist = node.dist / float(mod)
+            return tree
 
     def _generate_fixed_tree_database(self):
         """
@@ -876,6 +1059,12 @@ class DataBase:
         self._db.create_dataset("counts", 
             shape=(nvalues, nquarts, 16, 16),
             dtype=np.float32)
+
+        ## store node key, just once
+        self._db.create_dataset("nodekey", 
+            shape=(len([i.idx for i in self.tree.tree.search_nodes()])-len([i 
+                for i in self.tree.tree.get_leaves()]),),
+            dtype=np.uint32)   
 
         ## store node heights
         internal_nodes = sum(
@@ -915,10 +1104,16 @@ class DataBase:
         """
 
         ## (1) ntrees: iterate over each sampled tree (itree)
+
+        admixedges = get_all_admix_edges(self.tree)
+        nevents = int(comb(N=len(admixedges), k=self.nedges))
+        nvalstree = nevents * self.ntests * self.nreps 
+
         tidx = 0
         for _ in range(self.ntrees):
             ## sample tree and save new internal node heights in idx order
             itree = next(self.tree_generator)
+            #print(itree)
             node_heights = [           
                 itree.tree.search_nodes(idx=i)[0].height
                 for i in range(sum(1 for i in itree.tree.traverse()))
@@ -930,10 +1125,13 @@ class DataBase:
 
             ## (2) nevents: iterate over (source, target) items, or pairs or 
             ## triplets of items depending on nedges combinations.
-            eidx = tidx
-            events = itt.combinations(admixedges.items(), self.nedges)
-            for evt in events:
+            eidx = tidx*nvalstree
+            
 
+
+            events = itt.combinations(admixedges.items(), self.nedges)
+            
+            for evt in events:
                 ## initalize a Model to sample range of parameters on this edge
                 ## model counts array shape: (ntests*nreps, nquarts, 16, 16)
                 admixlist = [(i[0][0], i[0][1], None, None, None) for i in evt]
@@ -947,6 +1145,7 @@ class DataBase:
 
                 ## (4) nreps: fill the same param values repeated times
                 mdict = model.test_values
+
                 nnn = self.ntests * self.nreps
                 sta, end = eidx, eidx + nnn
 
@@ -973,7 +1172,7 @@ class DataBase:
                     self._db["admix_tends"][sta:end, xidx] = mend
 
                 eidx += nnn
-            tidx += eidx
+            tidx += 1
 
 
     def _fill_fixed_tree_database_counts(self, ipyclient):
@@ -987,48 +1186,54 @@ class DataBase:
         ## an iterator to return chunked slices of jobs
         jobs = range(self.checkpoint, self.nstored_values, self.chunksize)
         njobs = int((self.nstored_values - self.checkpoint) / self.chunksize)
-
         ## start progress bar
         start = time.time()
 
         ## submit jobs to engines
+        print("submitting jobs")
         asyncs = {}
-        for job in jobs:
-            args = (self.database, job, job + self.chunksize)
-            asyncs[job] = lbview.apply(Simulator, *args)
+        #for job in jobs:
+        #    args = (self.database, job, job + self.chunksize)
+        #    asyncs[job] = lbview.apply(Simulator, *args)
 
-        ## wait for jobs to finish, catch results as they return and enter 
-        ## them into the HDF5 database. This keeps memory low.
-        done = self.checkpoint
-        while 1:
-            ## gather finished jobs
-            finished = [i for i, j in asyncs.items() if j.ready()]
+        num_engines = len(self._ipcluster["pids"])
+        rounds = float(njobs)/float(num_engines)
+        for currround in range(rounds):
+            for roundnum in range(num_engines):
+                job = jobs[currround*num_engines + roundnum]
+                args = (self.database, job, job + self.chunksize)
+                asyncs[job] = lbview.apply(Simulator, *args)
 
-            ## iterate over finished list and insert results
-            for job in finished:
-                async = asyncs[job]
-                if async.successful():
+            ## wait for jobs to finish, catch results as they return and enter 
+            ## them into the HDF5 database. This keeps memory low.
+            done = self.checkpoint
+            while 1:
+                ## gather finished jobs
+                finished = [i for i, j in asyncs.items() if j.ready()]
+                ## iterate over finished list and insert results
+                if (len(finished) == len(asyncs)):
+                    for job in finished:
+                        async = asyncs[job]
+                        if async.successful():
+                            ## store result
+                            done += 1
+                            result = async.result().counts
+                            with h5py.File(self.database, 'r+') as io5:
+                                io5["counts"][job:(job + self.chunksize)] = result
+                            ## free up memory from job
+                            del asyncs[job]
 
-                    ## store result
-                    done += 1
-                    result = async.result().counts
-                    with h5py.File(self.database, 'r+') as io5:
-                        io5["counts"][job:job + self.chunksize] = result
+                        else:
+                            raise SimcatError(async.result())
 
-                    ## free up memory from job
-                    del asyncs[job]
-
+                ## print progress
+                self._progress_bar(njobs, done, start, "simulating count matrices")
+                ## finished: break loop
+                if len(asyncs) == 0:
+                    break
                 else:
-                    raise SimcatError(async.result())
-
-            ## print progress
-            self._progress_bar(njobs, done, start, "simulating count matrices")
-
-            ## finished: break loop
-            if len(asyncs) == 0:
-                break
-            else:
-                time.sleep(0.5)
+                    time.sleep(0.5)
+            print("Done with round: " + str(currround) + " of " + str(rounds))
 
 
     ## THE MAIN RUN COMMANDS ----------------------------------------

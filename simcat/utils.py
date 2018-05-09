@@ -2,7 +2,7 @@
 
 import numpy as np
 import toyplot
-
+import toyplot.pdf
 
 _ISTRING = """
     AAAA AAAC AAAG AAAT  AACA AACC AACG AACT  AAGA AAGC AAGG AAGT  AATA AATC AATG AATT
@@ -89,7 +89,7 @@ def plot_count_matrix(count_matrix, **kwargs):
     return canvas
 
 
-def plot_quartet_matrices(ttree, ndarray, **kwargs):
+def plot_quartet_matrices(ttree, ndarray, filename=None, **kwargs):
     """
     Plot quartet matrices for the 5-taxon example.
     """
@@ -132,4 +132,6 @@ def plot_quartet_matrices(ttree, ndarray, **kwargs):
             bounds=(x, x + 400, 0, 400),
         )
         x += 400
+    if filename:
+        toyplot.pdf.render(canvas, filename)
     return canvas

@@ -49,6 +49,7 @@ class Model:
         nreps=1,
         seed=None,
         debug=False,
+        mut=1e-8
         ):
         """
         An object used for demonstration and testing only. The real simulations
@@ -103,7 +104,7 @@ class Model:
 
         # fixed _mut; _theta sampled from theta; and _Ne computed for diploid
         self._length = 1000
-        self._mut = 1e-8
+        self._mut = mut
         self._theta = np.random.uniform(self._rtheta[0], self._rtheta[1])
 
         # dimension of simulations
@@ -320,8 +321,9 @@ class Model:
 
         ## Add migration edges
         for evt in range(self.aedges):
-            rate = self._mrates[evt]
-            time = self._mtimes[evt] * 2. * self._Ne
+            rate = self.test_values[evt]['mrates']
+            time = self.test_values[evt]['mtimes'][0] * 2. * self._Ne
+            print(time)
             source, dest = self.admixture_edges[evt][:2]
 
             ## rename nodes at time of admix in case divergences renamed them
@@ -342,6 +344,7 @@ class Model:
 
         ## sort events by time
         demog = sorted(list(demog), key=lambda x: x.time)
+        print(demog)
         return demog
 
 
@@ -369,10 +372,20 @@ class Model:
                         range(len(self.admixture_edges))]         
 
         ## build msprime simulation
+        #sim = ms.simulate(
+        #    length=self._length,
+        #    num_replicates=self.nsnps*100,  # 100X since some sims are empty
+        #    mutation_rate=self._mut,
+        #    migration_matrix=migmat,
+        #    population_configurations=self._get_popconfig(),
+        #    demographic_events=self._get_demography()
+        #)
+        ## build msprime simulation
         sim = ms.simulate(
             length=self._length,
-            num_replicates=self.nsnps * 100,  # 100X since some sims are empty
+            num_replicates=1,  # 100X since some sims are empty
             mutation_rate=self._mut,
+            recombination_rate=self.recombination_rate,
             migration_matrix=migmat,
             population_configurations=self._get_popconfig(),
             demographic_events=self._get_demography()
@@ -444,7 +457,8 @@ class Simulator:
         self.slice1 = slice1
 
         ## parameter transformations
-        self._mut = 1e-5
+        self._mut = 1e-8
+        self._recomb = 1e-9
         self._theta = None
 
         ## open view to the data
@@ -473,6 +487,7 @@ class Simulator:
 
             ## calls run and returns filled counts matrix
             if run:
+            	print("supposedly running")
                 self.run()
 
 
@@ -498,9 +513,10 @@ class Simulator:
 
         ## build msprime simulation
         sim = ms.simulate(
-            length=1000,                                      # optimize this
-            num_replicates=self.nsnps * 100,  
+            length=100000,                                      # optimize this
+            num_replicates=1,  
             mutation_rate=self._mut,
+            recombination_rate=self._recomb,
             migration_matrix=migmat,
             population_configurations=self._get_popconfig(),  # just theta
             demographic_events=self._get_demography()         # node heights
@@ -589,7 +605,7 @@ class Simulator:
             for ntip in range(self.ntips)]
         return population_configurations        
 
-
+    # have this write to a file?
     def run(self):
         """
         run and parse results for nsamples simulations.
@@ -598,20 +614,11 @@ class Simulator:
         for idx in range(self.nvalues):
             sims = self._simulate(idx)
 
-            ## store results (nsnps, ntips); def. 1000 SNPs
-            snparr = np.zeros((self.nsnps, self.ntips), dtype=np.int32)
+            ## get genotypes and convert to {0,1,2,3} under JC
+            bingenos = next(sims).genotype_matrix()
 
-            ## continue until all SNPs are sampled from generator
-            fidx = 0
-            while fidx < self.nsnps:
-                ## get genotypes and convert to {0,1,2,3} under JC
-                bingenos = next(sims).genotype_matrix()
-
-                ## count as 16x16 matrix and store to snparr
-                if bingenos.size:
-                    sitegenos = mutate_jc(bingenos, self.ntips)
-                    snparr[fidx] = sitegenos
-                    fidx += 1
+            ## count as 16x16 matrix and store to snparr
+            snparr = mutate_jc_fullmat(bingenos, self.ntips, self.nsnps)
 
             ## keep track for counts index
             quartidx = 0
@@ -773,7 +780,7 @@ class DataBase:
             if force:
                 ## exists and destroy it.
                 answer = input(
-                    "Do you really want to overwrite the database? (y/n) ")
+                	"Do you really want to overwrite the database? (y/n) ")
                 if answer in ('yes', 'y', "Y"):
                     os.remove(self.database)
                     self._db = h5py.File(self.database, mode='w')
@@ -1185,7 +1192,9 @@ class DataBase:
 
         ## an iterator to return chunked slices of jobs
         jobs = range(self.checkpoint, self.nstored_values, self.chunksize)
+        #print(jobs)
         njobs = int((self.nstored_values - self.checkpoint) / self.chunksize)
+        #print(njobs)
         ## start progress bar
         start = time.time()
 
@@ -1197,12 +1206,16 @@ class DataBase:
         #    asyncs[job] = lbview.apply(Simulator, *args)
 
         num_engines = len(self._ipcluster["pids"])
-        rounds = float(njobs)/float(num_engines)
+        #rounds = float(njobs)/float(num_engines) 
+        rounds = int(njobs / num_engines) + (njobs % num_engines > 0) # round up
+        #print(rounds)
         for currround in range(rounds):
+            #print(currround)
             for roundnum in range(num_engines):
-                job = jobs[currround*num_engines + roundnum]
-                args = (self.database, job, job + self.chunksize)
-                asyncs[job] = lbview.apply(Simulator, *args)
+            	if (currround*num_engines + roundnum < njobs):
+	                job = jobs[currround*num_engines + roundnum]
+	                args = (self.database, job, job + self.chunksize)
+	                asyncs[job] = lbview.apply(Simulator, *args)
 
             ## wait for jobs to finish, catch results as they return and enter 
             ## them into the HDF5 database. This keeps memory low.
@@ -1419,3 +1432,21 @@ def mutate_jc(geno, ntips):
             return init
     # return dtypes must match
     return np.zeros(0, dtype=np.int64)  
+
+@numba.jit(nopython=True)
+def mutate_jc_fullmat(geno, ntips, nsnps):
+    """
+    mutates sites with 1 into a new base in {0, 1, 2, 3}
+    """
+    snps=np.zeros((nsnps,ntips), dtype=np.int32)
+    allbases = np.array([0, 1, 2, 3])
+    for ridx in np.arange(nsnps):
+        snp = geno[ridx]
+        if snp.sum():
+            init = np.zeros(ntips, dtype=np.int64)
+            init.fill(np.random.choice(allbases))
+            notinit = np.random.choice(allbases[allbases != init[0]])
+            init[snp.astype(np.bool_)] = notinit
+            snps[ridx] = init
+    return snps
+

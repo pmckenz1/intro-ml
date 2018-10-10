@@ -618,6 +618,7 @@ class Simulator:
             bingenos = next(sims).genotype_matrix()
 
             ## count as 16x16 matrix and store to snparr
+            ## snparr is trimmed down to size = nsnps
             snparr = mutate_jc_fullmat(bingenos, self.ntips, self.nsnps)
 
             ## keep track for counts index
@@ -1440,8 +1441,9 @@ def mutate_jc_fullmat(geno, ntips, nsnps):
     """
     snps=np.zeros((nsnps,ntips), dtype=np.int32)
     allbases = np.array([0, 1, 2, 3])
+    indices = np.random.choice(geno.shape[0],size=nsnps,replace=False)
     for ridx in np.arange(nsnps):
-        snp = geno[ridx]
+        snp = geno[indices[ridx]]
         if snp.sum():
             init = np.zeros(ntips, dtype=np.int64)
             init.fill(np.random.choice(allbases))

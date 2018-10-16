@@ -1192,15 +1192,18 @@ class DataBase:
         lbview = ipyclient.load_balanced_view()
 
         ## an iterator to return chunked slices of jobs
-        jobs = range(self.checkpoint, self.nstored_values, self.chunksize)
+        jobs = list(range(self.checkpoint, self.nstored_values, self.chunksize))
+        if jobs[-1] != self.nstored_values:
+        	jobs.append(self.nstored_values)
         #print(jobs)
-        njobs = int((self.nstored_values - self.checkpoint) / self.chunksize)
+        njobs = int((self.nstored_values - self.checkpoint) / self.chunksize) + ((self.nstored_values - self.checkpoint) % self.chunksize > 0)
         #print(njobs)
         ## start progress bar
         start = time.time()
 
         ## submit jobs to engines
         print("submitting jobs")
+
         asyncs = {}
         #for job in jobs:
         #    args = (self.database, job, job + self.chunksize)
@@ -1209,13 +1212,15 @@ class DataBase:
         num_engines = len(self._ipcluster["pids"])
         #rounds = float(njobs)/float(num_engines) 
         rounds = int(njobs / num_engines) + (njobs % num_engines > 0) # round up
+
         #print(rounds)
         for currround in range(rounds):
             #print(currround)
             for roundnum in range(num_engines):
             	if (currround*num_engines + roundnum < njobs):
 	                job = jobs[currround*num_engines + roundnum]
-	                args = (self.database, job, job + self.chunksize)
+	                job_end = jobs[currround*num_engines + roundnum + 1]
+	                args = (self.database, job, job_end)
 	                asyncs[job] = lbview.apply(Simulator, *args)
 
             ## wait for jobs to finish, catch results as they return and enter 

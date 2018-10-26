@@ -49,7 +49,9 @@ class Model:
         nreps=1,
         seed=None,
         debug=False,
-        mut=1e-8
+        mut=1e-8,
+        mig_rate_bounds=[0,0.2],
+        constrained_times=None
         ):
         """
         An object used for demonstration and testing only. The real simulations
@@ -153,6 +155,10 @@ class Model:
         self.admixture_edges = admixture_edges
         self.aedges = len(self.admixture_edges)
 
+        ## parameter constraints
+        self.mig_rate_bounds = mig_rate_bounds
+        self.constrained_times = constrained_times
+
         ## generate migration parameters from the tree and admixture_edges
         ## stores data in memory as self.test_values as 'mrates' and 'mtimes'
         self._get_test_values()
@@ -210,7 +216,8 @@ class Model:
             ## otherwise generate uniform values across edges
             else:        
                 ## get migration rates from exponential
-                mrates = np.random.exponential(0.1, self.ntests)
+                mrates = np.random.uniform(self.mig_rate_bounds[0],
+                	self.mig_rate_bounds[1], self.ntests)
                 mrates[mrates > 0.99] = 0.99
 
                 ## get divergence times from source start to end                
@@ -222,6 +229,13 @@ class Model:
                 ui = np.random.uniform(ival[0], ival[1], self.ntests * 2)
                 ui = ui.reshape((self.ntests, 2))
                 mtimes = np.sort(ui, axis=1)  
+                if self.constrained_times:
+                	for _ in range(self.constrained_times):
+	                	mtimes_constrained = np.zeros(mtimes.shape)
+	                	for idx, i in enumerate(mtimes):
+	                		mtimes_constrained[idx] = np.sort(np.random.uniform(low=i[0],
+	                			high=i[1],size=2))
+	                	mtimes = mtimes_constrained
 
                 self.test_values[idx] = {
                     "mrates": mrates, 
@@ -513,7 +527,7 @@ class Simulator:
 
         ## build msprime simulation
         sim = ms.simulate(
-            length=100000,                                      # optimize this
+            length=1000000,                                      # optimize this
             num_replicates=1,  
             mutation_rate=self._mut,
             recombination_rate=self._recomb,
@@ -718,12 +732,14 @@ class DataBase:
         workdir,
         tree,
         edge_function=None,
-        nsnps=1000,
+        nsnps=10000,
         nedges=0,
         ntrees=1,
         ntests=1,
         nreps=1,
         theta=0.01,
+        mig_rate_bounds=[0,0.2],
+        constrained_times=None,
         seed=123,
         force=False,
         debug=False,
@@ -753,6 +769,10 @@ class DataBase:
         self.nreps = nreps
         self.nsnps = nsnps
         self.nstored_values = None
+
+        ## constraints on parameter sampling
+        self.mig_rate_bounds = mig_rate_bounds
+        self.constrained_times = constrained_times
 
         ## decide on an appropriate chunksize to keep memory load reasonable
         self.chunksize = 1000
@@ -1149,7 +1169,9 @@ class DataBase:
                 model = Model(itree, 
                     admixture_edges=admixlist, 
                     ntests=self.ntests, 
-                    theta=self.theta)
+                    theta=self.theta,
+                    mig_rate_bounds=self.mig_rate_bounds,
+                    constrained_times=self.constrained_times)
 
                 ## (4) nreps: fill the same param values repeated times
                 mdict = model.test_values

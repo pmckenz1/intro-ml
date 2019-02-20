@@ -133,7 +133,7 @@ class Model:
 
         # store node.name as node.idx, save old names in a dict.
         self.namedict = {}
-        for node in self.tree.tree.traverse():
+        for node in self.tree.treenode.traverse():
             if node.is_leaf():
                 # store old name
                 self.namedict[str(node.idx)] = node.name
@@ -215,14 +215,19 @@ class Model:
 
             ## otherwise generate uniform values across edges
             else:        
-                ## get migration rates from exponential
-                mrates = np.random.uniform(self.mig_rate_bounds[0],
-                	self.mig_rate_bounds[1], self.ntests)
-                mrates[mrates > 0.99] = 0.99
+                ## get migration rates
+                ## small chance (1 in 40 -- could be standardized on # edges)
+                ## of there being no gene flow
+                if np.random.binomial(1,float(1)/40):
+                    mrates = np.repeat(0, self.ntests)
+                else:
+                    mrates = np.random.uniform(self.mig_rate_bounds[0],
+                    	self.mig_rate_bounds[1], self.ntests)
+                    mrates[mrates > 0.99] = 0.99
 
                 ## get divergence times from source start to end                
-                snode = self.tree.tree.search_nodes(idx=event[0])[0]
-                dnode = self.tree.tree.search_nodes(idx=event[1])[0]
+                snode = self.tree.treenode.search_nodes(idx=event[0])[0]
+                dnode = self.tree.treenode.search_nodes(idx=event[1])[0]
                 ival = intervals[snode.idx, dnode.idx]
 
                 ## interval is stored as an int, and is bls in generations
@@ -261,7 +266,7 @@ class Model:
             xlabel="simulation index",
             ylabel="migration intervals", 
             ymin=0, 
-            ymax=self.tree.tree.height)  # * 2 * self._Ne)
+            ymax=self.tree.treenode.height)  # * 2 * self._Ne)
         ax2 = canvas.cartesian(
             grid=(1, 3, 2), 
             xlabel="proportion migrants", 
@@ -316,14 +321,14 @@ class Model:
         ## tag min index child for each node, since at the time the node is 
         ## called it may already be renamed by its child index b/c of 
         ## divergence events.
-        for node in self.tree.tree.traverse():
+        for node in self.tree.treenode.traverse():
             if node.children:
                 node._schild = min([i.idx for i in node.get_descendants()])
             else:
                 node._schild = node.idx
 
         ## Add divergence events
-        for node in self.tree.tree.traverse():
+        for node in self.tree.treenode.traverse():
             if node.children:
                 dest = min([i._schild for i in node.children])
                 source = max([i._schild for i in node.children])
@@ -341,8 +346,8 @@ class Model:
             source, dest = self.admixture_edges[evt][:2]
 
             ## rename nodes at time of admix in case divergences renamed them
-            snode = self.tree.tree.search_nodes(idx=source)[0]
-            dnode = self.tree.tree.search_nodes(idx=dest)[0]
+            snode = self.tree.treenode.search_nodes(idx=source)[0]
+            dnode = self.tree.treenode.search_nodes(idx=dest)[0]
             children = (snode._schild, dnode._schild)
             demog.add(ms.MigrationRateChange(time[0], rate, children))
             demog.add(ms.MigrationRateChange(time[1], 0, children))
@@ -471,8 +476,8 @@ class Simulator:
         self.slice1 = slice1
 
         ## parameter transformations
-        self._mut = 1e-8
-        self._recomb = 1e-9
+        self._mut = 5e-8
+        self._recomb = 1e-8
         self._theta = None
 
         ## open view to the data
@@ -548,9 +553,9 @@ class Simulator:
 
         ## append stored heights to tree nodes as metadata
         cidx = 0
-        n_internal_nodes = sum(1 for i in self.tree.tree.traverse())
+        n_internal_nodes = sum(1 for i in self.tree.treenode.traverse())
         for nidx in range(n_internal_nodes):
-            node = self.tree.tree.search_nodes(idx=nidx)[0]
+            node = self.tree.treenode.search_nodes(idx=nidx)[0]
             if not node.is_leaf():
                 node._height = self._node_heights[cidx]
                 cidx += 1
@@ -558,14 +563,14 @@ class Simulator:
         ## tag min index child for each node, since at the time the node is 
         ## called it may already be renamed by its child index b/c of 
         ## divergence events.
-        for node in self.tree.tree.traverse():
+        for node in self.tree.treenode.traverse():
             if node.children:
                 node._schild = min([i.idx for i in node.get_descendants()])
             else:
                 node._schild = node.idx
 
         ## Add divergence events
-        for node in self.tree.tree.traverse():
+        for node in self.tree.treenode.traverse():
             if node.children:
                 dest = min([i._schild for i in node.children])
                 source = max([i._schild for i in node.children])
@@ -586,8 +591,8 @@ class Simulator:
             dest = self._atargets[evt]
 
             ## rename nodes at time of admix in case divergences renamed them
-            snode = self.tree.tree.search_nodes(idx=source)[0]
-            dnode = self.tree.tree.search_nodes(idx=dest)[0]
+            snode = self.tree.treenode.search_nodes(idx=source)[0]
+            dnode = self.tree.treenode.search_nodes(idx=dest)[0]
             children = (snode._schild, dnode._schild)
             demog.add(ms.MigrationRateChange(start, rate, children))
             demog.add(ms.MigrationRateChange(end, 0, children))
@@ -895,7 +900,7 @@ class DataBase:
         a.y.ticks.show = True
         """
         ctree = copy.deepcopy(self.tree)
-        for node in ctree.tree.traverse():
+        for node in ctree.treenode.traverse():
 
             ## slide internal nodes 
             if node.up and node.children:
@@ -913,8 +918,8 @@ class DataBase:
                 node.dist -= newheight
 
         ## make max height = 1
-        mod = ctree.tree.height
-        for node in ctree.tree.traverse():
+        mod = ctree.treenode.height
+        for node in ctree.treenode.traverse():
             node.dist = node.dist / float(mod)
 
         return ctree
@@ -955,7 +960,7 @@ class DataBase:
         #d = {}
         
         ## testobj is our traversed full tree
-        for i in tree.tree.traverse():
+        for i in tree.treenode.traverse():
             testobj.append(i)
         
         # start by getting branch lengths for the longest branch
@@ -1043,18 +1048,18 @@ class DataBase:
             return n #d
         elif returndict == "both":
             # create the tree object
-            for leaf in tree.tree.get_leaves():
+            for leaf in tree.treenode.get_leaves():
                 for node in leaf.iter_ancestors():
                     set_node_height(node,n[node.idx])
             return (tree,n)
         else:
             # create the tree object
-            for leaf in tree.tree.get_leaves():
+            for leaf in tree.treenode.get_leaves():
                 for node in leaf.iter_ancestors():
                     set_node_height(node,n[node.idx])
                 ## make max height = 1
-            mod = tree.tree.height
-            for node in tree.tree.traverse():
+            mod = tree.treenode.height
+            for node in tree.treenode.traverse():
                 node.dist = node.dist / float(mod)
             return tree
 
@@ -1070,9 +1075,9 @@ class DataBase:
         ## store the tree as newick with no bls, and using idx for name, 
         ## e.g., ((1,2),(3,4));
         storetree = self.tree.copy()
-        for node in storetree.tree.traverse():
+        for node in storetree.treenode.traverse():
             node.name = node.idx
-        self._db.attrs["tree"] = storetree.tree.write(format=9)
+        self._db.attrs["tree"] = storetree.treenode.write(format=9)
         self._db.attrs["nsnps"] = self.nsnps
 
         ## the number of data points will be nreps x the number of events
@@ -1090,13 +1095,13 @@ class DataBase:
 
         ## store node key, just once
         self._db.create_dataset("nodekey", 
-            shape=(len([i.idx for i in self.tree.tree.search_nodes()])-len([i 
-                for i in self.tree.tree.get_leaves()]),),
+            shape=(len([i.idx for i in self.tree.treenode.search_nodes()])-len([i 
+                for i in self.tree.treenode.get_leaves()]),),
             dtype=np.uint32)   
 
         ## store node heights
         internal_nodes = sum(
-            [1 for i in self.tree.tree.traverse() if not i.is_leaf()])
+            [1 for i in self.tree.treenode.traverse() if not i.is_leaf()])
         self._db.create_dataset("node_heights",
             shape=(nvalues, internal_nodes),
             dtype=np.float64)
@@ -1143,9 +1148,9 @@ class DataBase:
             itree = next(self.tree_generator)
             #print(itree)
             node_heights = [           
-                itree.tree.search_nodes(idx=i)[0].height
-                for i in range(sum(1 for i in itree.tree.traverse()))
-                if not itree.tree.search_nodes(idx=i)[0].is_leaf()
+                itree.treenode.search_nodes(idx=i)[0].height
+                for i in range(sum(1 for i in itree.treenode.traverse()))
+                if not itree.treenode.search_nodes(idx=i)[0].is_leaf()
             ]
 
             ## get all admixture edges that can be drawn on this tree
@@ -1382,7 +1387,7 @@ def get_all_admix_edges(ttree):
     so the source and dest need to overlap in time interval.    
     """
     ## for all nodes map the potential admixture interval
-    for snode in ttree.tree.traverse():
+    for snode in ttree.treenode.traverse():
         if snode.is_root():
             snode.interval = (None, None)
         else:
@@ -1390,8 +1395,8 @@ def get_all_admix_edges(ttree):
 
     ## for all nodes find overlapping intervals
     intervals = {}
-    for snode in ttree.tree.traverse():
-        for dnode in ttree.tree.traverse():
+    for snode in ttree.treenode.traverse():
+        for dnode in ttree.treenode.traverse():
             if not any([snode.is_root(), dnode.is_root(), dnode == snode]):
                 ## check for overlap
                 smin, smax = snode.interval
@@ -1468,8 +1473,8 @@ def mutate_jc_fullmat(geno, ntips, nsnps):
     """
     snps=np.zeros((nsnps,ntips), dtype=np.int32)
     allbases = np.array([0, 1, 2, 3])
-    indices = np.random.choice(geno.shape[0],size=nsnps,replace=False)
-    for ridx in np.arange(nsnps):
+    indices = np.random.choice(geno.shape[0],size=min(geno.shape[0],10000),replace=False)
+    for ridx in np.arange(min(geno.shape[0],10000)):
         snp = geno[indices[ridx]]
         if snp.sum():
             init = np.zeros(ntips, dtype=np.int64)

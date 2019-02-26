@@ -42,7 +42,8 @@ class Model:
     def __init__(
         self, 
         tree,
-        admixture_edges=None,
+        interval_admix_edges=None,
+        point_admix_edges=None,
         theta=0.01,
         nsnps=1000,
         ntests=10,
@@ -51,7 +52,8 @@ class Model:
         debug=False,
         mut=1e-8,
         mig_rate_bounds=[0,0.2],
-        constrained_times=None
+        constrained_times=None,
+        nomig_prop=1./40
         ):
         """
         An object used for demonstration and testing only. The real simulations
@@ -108,6 +110,7 @@ class Model:
         self._length = 1000
         self._mut = mut
         self._theta = np.random.uniform(self._rtheta[0], self._rtheta[1])
+        self.recombination_rate = 0
 
         # dimension of simulations
         self.nsnps = nsnps
@@ -140,20 +143,39 @@ class Model:
                 # set new name
                 node.name = str(node.idx)
 
-        # parse the input admixture edges. It should a list of tuples, or list
+        self.nomig_prop = nomig_prop
+
+        # parse the input INTERVALadmixture edges. 
+        # It should a list of tuples, or list
         # of lists where each element has five values.
-        if admixture_edges:
+
+        self.aedges = 0 # start number of interval admix edges
+        #self.aedges = 0 # start number of point admix edges
+        if interval_admix_edges:
             # single list or tuple: [a, b, c, d, e] or (a, b, c, d, e)
-            if isinstance(admixture_edges[0], (str, int)):
-                admixture_edges = [admixture_edges]
+            if isinstance(interval_admix_edges[0], (str, int)):
+                interval_admix_edges = [interval_admix_edges]
         else:
-            admixture_edges = []
-        for event in admixture_edges:
+            interval_admix_edges = []
+        for event in interval_admix_edges:
             if len(event) != 5:
                 raise ValueError(
-                    "admixture events should each be a tuple with 5 values")
-        self.admixture_edges = admixture_edges
-        self.aedges = len(self.admixture_edges)
+                    "interval admixture events should each be a tuple with 5 values")
+        self.interval_admix_edges = interval_admix_edges
+        self.aedges += len(self.interval_admix_edges) # number of interval admix edges
+
+        if point_admix_edges:
+            # single list or tuple: [a, b, c, d, e] or (a, b, c, d, e)
+            if isinstance(point_admix_edges[0], (str, int)):
+                point_admix_edges = [point_admix_edges]
+        else:
+            point_admix_edges = []
+        for event in point_admix_edges:
+            if len(event) != 4:
+                raise ValueError(
+                    "point admixture events should each be a tuple with 4 values")
+        self.point_admix_edges = point_admix_edges
+        self.aedges += len(self.point_admix_edges) # number of point admix edges
 
         ## parameter constraints
         self.mig_rate_bounds = mig_rate_bounds
@@ -190,7 +212,7 @@ class Model:
         ## store evt: (mrates, mtimes) for each admix event in admixture list
         intervals = get_all_admix_edges(self.tree)
         idx = 0
-        for event in self.admixture_edges:
+        for event in self.interval_admix_edges:
 
             ## if times and rate were provided then use em.
             if all((i is not None for i in event[-3:])):
@@ -213,12 +235,12 @@ class Model:
                     "mtimes": mtimes, 
                     }
 
-            ## otherwise generate uniform values across edges
+            ## otherwise, if interval, generate uniform values across edges
             else:        
                 ## get migration rates
                 ## small chance (1 in 40 -- could be standardized on # edges)
                 ## of there being no gene flow
-                if np.random.binomial(1,float(1)/40):
+                if np.random.binomial(1,self.nomig_prop):
                     mrates = np.repeat(0, self.ntests)
                 else:
                     mrates = np.random.uniform(self.mig_rate_bounds[0],
@@ -248,7 +270,64 @@ class Model:
                     }
                 if self._debug:
                     print("uniform testvals mig:", 
-                          (ival[0], ival[1]), (mrates[0], mrates[1]))
+                          (ival[0], ival[1]), (mrates[0]))
+
+            idx += 1
+
+            # now do the same for point migration:
+        idx = 0
+        for event in self.point_admix_edges:
+
+            ## if times and rate were provided then use em.
+            if all((i is not None for i in event[-3:])):
+                mrates = np.repeat(event[3], self.ntests)
+
+                ## raise an error if mtime is not possible
+                ival = intervals[(event[0], event[1])]
+                if (event[2] >= ival[0]) and (event[2] <= ival[1]):
+                    ## record timing in generations
+                    e2 = np.repeat(event[2], self.ntests)
+                    mtimes = e2#np.stack((e2), axis=1)
+                else:
+                    print(ival, event)
+                    raise Exception("bad migration interval")
+
+                ## store migration arrays
+                self.test_values[idx] = {
+                    "mrates": mrates, 
+                    "mtimes": mtimes, 
+                    }
+
+            ## otherwise, if interval, generate uniform values across edges
+            else:        
+                ## get migration rates
+                ## small chance (1 in 40 -- could be standardized on # edges)
+                ## of there being no gene flow
+                if np.random.binomial(1,self.nomig_prop): # is there migration
+                    mrates = np.repeat(0, self.ntests)
+                else: # if yes, get a prop
+                    mrates = np.random.uniform(self.mig_rate_bounds[0],
+                        self.mig_rate_bounds[1], self.ntests)
+                    mrates[mrates > 0.99] = 0.99
+
+                ## get divergence times from source start to end                
+                #snode = self.tree.treenode.search_nodes(idx=event[0])[0]
+                #dnode = self.tree.treenode.search_nodes(idx=event[1])[0]
+                ival = intervals[(event[0], event[1])] #intervals[snode.idx, dnode.idx]
+
+                ## time is stored as an int, and is bls in generations
+                ui = np.random.uniform(ival[0], ival[1], self.ntests)
+                mtimes = ui
+
+
+                self.test_values[idx] = {
+                    "mrates": mrates, 
+                    "mtimes": mtimes,
+                    }
+                if self._debug:
+                    print("uniform testvals mig:", 
+                          (ival[0], ival[1]), (mrates))
+
             idx += 1
 
 
@@ -338,12 +417,12 @@ class Model:
                     print('demog div:', (int(time), source, dest), 
                         file=sys.stderr)
 
-        ## Add migration edges
+        ## Add interval migration edges
         for evt in range(self.aedges):
             rate = self.test_values[evt]['mrates']
             time = self.test_values[evt]['mtimes'][0] * 2. * self._Ne
-            print(time)
-            source, dest = self.admixture_edges[evt][:2]
+
+            source, dest = self.interval_admix_edges[evt][:2]
 
             ## rename nodes at time of admix in case divergences renamed them
             snode = self.tree.treenode.search_nodes(idx=source)[0]
@@ -361,9 +440,30 @@ class Model:
                     file=sys.stderr,
                     )
 
+        ## Add point admix events
+        for evt in range(self.aedges):
+            prop = self.test_values[evt]['mrates']
+            time = self.test_values[evt]['mtimes'][0] * 2. * self._Ne
+
+            source, dest = self.point_admix_edges[evt][:2]
+
+            ## rename nodes at time of admix in case divergences renamed them
+            snode = self.tree.treenode.search_nodes(idx=source)[0]
+            dnode = self.tree.treenode.search_nodes(idx=dest)[0]
+            children = (snode._schild, dnode._schild)
+
+            demog.add(ms.MassMigration(time=time, 
+                source=children[0], 
+                destination=children[1], 
+                proportion=prop))
+
+            if self._debug:
+                print('demog div:', (int(time), source, dest), rount(prop,4), 
+                    file=sys.stderr)
+
         ## sort events by time
         demog = sorted(list(demog), key=lambda x: x.time)
-        print(demog)
+
         return demog
 
 
@@ -385,10 +485,10 @@ class Model:
         # Ne will be calculated from theta.
         migmat = np.zeros((self.ntips, self.ntips), dtype=int).tolist()
         self._theta = self.test_values["thetas"][idx]
-        self._mtimes = [self.test_values[evt]['mtimes'][idx] for evt in 
-                        range(len(self.admixture_edges))] 
-        self._mrates = [self.test_values[evt]['mrates'][idx] for evt in 
-                        range(len(self.admixture_edges))]         
+        #self._mtimes = [self.test_values[evt]['mtimes'][idx] for evt in 
+        #                range(len(self.admixture_edges))] 
+        #self._mrates = [self.test_values[evt]['mrates'][idx] for evt in 
+        #                range(len(self.admixture_edges))]         
 
         ## build msprime simulation
         #sim = ms.simulate(
@@ -465,7 +565,7 @@ class Simulator:
     building the msprime simulations calls, and then calling .run() to fill
     count matrices and return them. 
     """
-    def __init__(self, database, slice0, slice1, run=True, debug=False):
+    def __init__(self, database, slice0, slice1, chrom=True, run=True, debug=False):
 
         ## debugging
         self._debug = debug
@@ -475,18 +575,31 @@ class Simulator:
         self.slice0 = slice0
         self.slice1 = slice1
 
+        ## simulate chrom vs. indiv snps
+        self.chrom = chrom
+
         ## parameter transformations
-        self._mut = 5e-8
+        self._mut = 1e-6
         self._recomb = 1e-8
         self._theta = None
+        self._length = 1000000
 
         ## open view to the data
         with h5py.File(self.database, 'r') as io5:
 
             ## sliced data arrays
             self.thetas = io5["thetas"][slice0:slice1]
-            self.atstarts = io5["admix_tstarts"][slice0:slice1, ...]
-            self.atends = io5["admix_tends"][slice0:slice1, ...]   
+
+            # is this point migration or interval
+            if 'admix_times' not in io5.keys():
+                self.atstarts = io5["admix_tstarts"][slice0:slice1, ...]
+                self.atends = io5["admix_tends"][slice0:slice1, ...]  
+                self.atimes = None
+            if 'admix_times' in io5.keys():
+                self.atimes = io5["admix_times"][slice0:slice1, ...]  
+                self.atstarts = None
+                self.atends = None
+
             self.asources = io5["admix_sources"][slice0:slice1, ...]
             self.atargets = io5["admix_targets"][slice0:slice1, ...]
             self.aprops = io5["admix_props"][slice0:slice1, ...] 
@@ -519,27 +632,46 @@ class Simulator:
     def _simulate(self, idx):
         """
         performs simulations with params varied across input values.
+        'chrom' argument refers to whether to return sim with long
+        length and recomb, vs. sim with length 1, no recomb, and many replicates
         """       
         # store _temp values for this idx simulation, 
         migmat = np.zeros((self.ntips, self.ntips), dtype=int).tolist()
         self._theta = self.thetas[idx]
-        self._astarts = self.atstarts[idx]
-        self._aends = self.atends[idx]
+
+        # point or interval migration?
+        if not len(self.atimes):
+            self._astarts = self.atstarts[idx]
+            self._aends = self.atends[idx]
+        if len(self.atimes):
+            self._atimes = self.atimes[idx]
+
         self._aprops = self.aprops[idx]
         self._asources = self.asources[idx]
         self._atargets = self.atargets[idx]
         self._node_heights = self.node_heights[idx]
 
         ## build msprime simulation
-        sim = ms.simulate(
-            length=1000000,                                      # optimize this
-            num_replicates=1,  
-            mutation_rate=self._mut,
-            recombination_rate=self._recomb,
-            migration_matrix=migmat,
-            population_configurations=self._get_popconfig(),  # just theta
-            demographic_events=self._get_demography()         # node heights
-        )
+        if self.chrom:
+            sim = ms.simulate(
+                length=self._length,                                      # optimize this
+                num_replicates=10000000,  
+                mutation_rate=self._mut,
+                recombination_rate=self._recomb,
+                migration_matrix=migmat,
+                population_configurations=self._get_popconfig(),  # just theta
+                demographic_events=self._get_demography(),         # node heights
+            )
+        if not self.chrom:
+            sim = ms.simulate(
+                length=1,                                      # optimize this
+                num_replicates=10000000,  
+                mutation_rate=self._mut,
+                #recombination_rate=self._recomb,
+                migration_matrix=migmat,
+                population_configurations=self._get_popconfig(),  # just theta
+                demographic_events=self._get_demography(),         # node heights
+            )
         return sim
 
 
@@ -583,30 +715,60 @@ class Simulator:
                         file=sys.stderr)
 
         ## Add migration edges
-        for evt in range(self.aedges):
-            rate = self._aprops[evt]
-            start = self._astarts[evt] * 2. * self._Ne
-            end = self._aends[evt] * 2. * self._Ne
-            source = self._asources[evt]
-            dest = self._atargets[evt]
+        if not len(self.atimes):
+            for evt in range(self.aedges):
+                rate = self._aprops[evt]
+                start = self._astarts[evt] * 2. * self._Ne
+                end = self._aends[evt] * 2. * self._Ne
+                source = self._asources[evt]
+                dest = self._atargets[evt]
 
-            ## rename nodes at time of admix in case divergences renamed them
-            snode = self.tree.treenode.search_nodes(idx=source)[0]
-            dnode = self.tree.treenode.search_nodes(idx=dest)[0]
-            children = (snode._schild, dnode._schild)
-            demog.add(ms.MigrationRateChange(start, rate, children))
-            demog.add(ms.MigrationRateChange(end, 0, children))
+                ## rename nodes at time of admix in case divergences renamed them
+                snode = self.tree.treenode.search_nodes(idx=source)[0]
+                dnode = self.tree.treenode.search_nodes(idx=dest)[0]
+                children = (snode._schild, dnode._schild)
+                demog.add(ms.MigrationRateChange(start, rate, children))
+                demog.add(ms.MigrationRateChange(end, 0, children))
 
-            ## debug
-            if self._debug:
-                print(
-                    'demog mig:', 
-                    (start, end),
-                    round(rate, 4), 
-                    children,
-                    self._Ne,
-                    file=sys.stderr,
-                    )
+                ## debug
+                if self._debug:
+                    print(
+                        'demog mig:', 
+                        (start, end),
+                        round(rate, 4), 
+                        children,
+                        self._Ne,
+                        file=sys.stderr,
+                        )
+
+        if len(self.atimes):
+            for evt in range(self.aedges):
+                rate = self._aprops[evt]
+                time = self._atimes[evt] * 2. * self._Ne
+                source = self._asources[evt]
+                dest = self._atargets[evt]
+
+                ## rename nodes at time of admix in case divergences renamed them
+                snode = self.tree.treenode.search_nodes(idx=source)[0]
+                dnode = self.tree.treenode.search_nodes(idx=dest)[0]
+                children = (snode._schild, dnode._schild)
+
+                demog.add(ms.MassMigration(time=time, 
+                    source=children[0], 
+                    destination=children[1], 
+                    proportion=rate))
+
+
+                ## debug
+                if self._debug:
+                    print(
+                        'demog mig:', 
+                        (time),
+                        round(rate, 4), 
+                        children,
+                        self._Ne,
+                        file=sys.stderr,
+                        )
 
         ## sort events by time
         demog = sorted(list(demog), key=lambda x: x.time)
@@ -624,21 +786,46 @@ class Simulator:
             for ntip in range(self.ntips)]
         return population_configurations        
 
+
+    #def _sim_gen(self,idx):
+    #    while 1:
+    #        yield self._simulate(idx)
+
+
     # have this write to a file?
     def run(self):
         """
         run and parse results for nsamples simulations.
         """
         ## iterate over ntests (different sampled simulation parameters)
+
         for idx in range(self.nvalues):
-            sims = self._simulate(idx)
+            generate_sims = self._simulate(idx)
+
+            if self.chrom:
+                geno_mat = next(generate_sims).genotype_matrix()
+                self.bingenos = geno_mat
+
+            else:
+                snpcounter = 0
+                self.bingenos = np.zeros((self.nsnps,4),dtype=np.int8)
+                while snpcounter < self.nsnps:
+                    #newsim = next(generate_sims)
+                    geno_mat = next(generate_sims).genotype_matrix()
+                    #print(geno_mat)
+                    #print(snpcounter)
+                    if len(geno_mat):
+                        self.bingenos[snpcounter] = geno_mat[0]
+                        snpcounter += 1
+
+            #sim = self._simulate(idx)
 
             ## get genotypes and convert to {0,1,2,3} under JC
-            bingenos = next(sims).genotype_matrix()
+            #bingenos = next(sims).genotype_matrix()
 
             ## count as 16x16 matrix and store to snparr
             ## snparr is trimmed down to size = nsnps
-            snparr = mutate_jc_fullmat(bingenos, self.ntips, self.nsnps)
+            snparr = mutate_jc_fullmat(self.bingenos, self.ntips, self.nsnps)
 
             ## keep track for counts index
             quartidx = 0
@@ -653,7 +840,7 @@ class Simulator:
                 quartidx += 1
 
             # re-scale by max count for this rep
-            self.counts[idx, ...] /= self.counts[idx, ...].max()
+            #self.counts[idx, ...] /= self.counts[idx, ...].max()
 
 
 
@@ -743,6 +930,7 @@ class DataBase:
         ntests=1,
         nreps=1,
         theta=0.01,
+        point_mig = True,
         mig_rate_bounds=[0,0.2],
         constrained_times=None,
         seed=123,
@@ -766,6 +954,8 @@ class DataBase:
         self.theta = theta
         self.tree = tree
         self.edge_function = (edge_function or {})
+        self.point_mig = point_mig
+        self.nomig_prop = 1./40
 
         ## database label combinations
         self.nedges = nedges
@@ -1116,13 +1306,17 @@ class DataBase:
         self._db.create_dataset("admix_props", 
             shape=(nvalues, self.nedges),
             dtype=np.float64)
-        self._db.create_dataset("admix_tstarts", 
-            shape=(nvalues, self.nedges),
-            dtype=np.float64)
-        self._db.create_dataset("admix_tends", 
-            shape=(nvalues, self.nedges),
-            dtype=np.float64)
-
+        if not self.point_mig:
+            self._db.create_dataset("admix_tstarts", 
+                shape=(nvalues, self.nedges),
+                dtype=np.float64)
+            self._db.create_dataset("admix_tends", 
+                shape=(nvalues, self.nedges),
+                dtype=np.float64)
+        if self.point_mig:
+            self._db.create_dataset("admix_times", 
+                shape=(nvalues, self.nedges),
+                dtype=np.float64)
         ## store parameters of the simulation
         self._db.create_dataset("thetas",
             shape=(nvalues,),
@@ -1167,12 +1361,17 @@ class DataBase:
             for evt in events:
                 ## initalize a Model to sample range of parameters on this edge
                 ## model counts array shape: (ntests*nreps, nquarts, 16, 16)
-                admixlist = [(i[0][0], i[0][1], None, None, None) for i in evt]
-
+                if self.point_mig:
+                    iadmixlist = None
+                    padmixlist = admixlist = [(i[0][0], i[0][1], None, None) for i in evt] # keeping admixlist for both for a universal name
+                if not self.point_mig:
+                    iadmixlist = admixlist = [(i[0][0], i[0][1], None, None, None) for i in evt]
+                    padmixlist = None
                 ## (3) ntests: sample duration, magnitude, and params on edges
                 ## model .run() will make array (ntests, nquarts, 16, 16)
                 model = Model(itree, 
-                    admixture_edges=admixlist, 
+                    interval_admix_edges=iadmixlist, 
+                    point_admix_edges=padmixlist,
                     ntests=self.ntests, 
                     theta=self.theta,
                     mig_rate_bounds=self.mig_rate_bounds,
@@ -1196,15 +1395,21 @@ class DataBase:
                     sources = np.repeat(admixlist[xidx][0], nnn)
                     targets = np.repeat(admixlist[xidx][1], nnn)
                     mrates = _tile_reps(mdict[xidx]["mrates"], self.nreps)
-                    msta = _tile_reps(mdict[xidx]["mtimes"][:, 0], self.nreps)
-                    mend = _tile_reps(mdict[xidx]["mtimes"][:, 1], self.nreps)                    
+                    if not self.point_mig:
+                        msta = _tile_reps(mdict[xidx]["mtimes"][:, 0], self.nreps)
+                        mend = _tile_reps(mdict[xidx]["mtimes"][:, 1], self.nreps) 
+                    if self.point_mig:
+                        mtime =    _tile_reps(mdict[xidx]["mtimes"], self.nreps)                 
 
                     ## store labels for this admix event (nevents x nreps)
                     self._db["admix_sources"][sta:end, xidx] = sources
                     self._db["admix_targets"][sta:end, xidx] = targets
                     self._db["admix_props"][sta:end, xidx] = mrates
-                    self._db["admix_tstarts"][sta:end, xidx] = msta
-                    self._db["admix_tends"][sta:end, xidx] = mend
+                    if not self.point_mig:
+                        self._db["admix_tstarts"][sta:end, xidx] = msta
+                        self._db["admix_tends"][sta:end, xidx] = mend
+                    if self.point_mig:
+                        self._db["admix_times"][sta:end, xidx] = mtime
 
                 eidx += nnn
             tidx += 1

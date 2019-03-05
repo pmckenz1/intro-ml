@@ -580,9 +580,9 @@ class Simulator:
 
         ## parameter transformations
         self._mut = 1e-6
-        self._recomb = 1e-8
+        self._recomb = 1e-6
         self._theta = None
-        self._length = 1000000
+        self._length = 300000
 
         ## open view to the data
         with h5py.File(self.database, 'r') as io5:
@@ -640,10 +640,10 @@ class Simulator:
         self._theta = self.thetas[idx]
 
         # point or interval migration?
-        if not len(self.atimes):
+        if self.atimes is None:
             self._astarts = self.atstarts[idx]
             self._aends = self.atends[idx]
-        if len(self.atimes):
+        if not (self.atimes is None):
             self._atimes = self.atimes[idx]
 
         self._aprops = self.aprops[idx]
@@ -715,7 +715,7 @@ class Simulator:
                         file=sys.stderr)
 
         ## Add migration edges
-        if not len(self.atimes):
+        if self.atimes is None:
             for evt in range(self.aedges):
                 rate = self._aprops[evt]
                 start = self._astarts[evt] * 2. * self._Ne
@@ -741,7 +741,7 @@ class Simulator:
                         file=sys.stderr,
                         )
 
-        if len(self.atimes):
+        if not (self.atimes is None):
             for evt in range(self.aedges):
                 rate = self._aprops[evt]
                 time = self._atimes[evt] * 2. * self._Ne
@@ -930,7 +930,9 @@ class DataBase:
         ntests=1,
         nreps=1,
         theta=0.01,
-        point_mig = True,
+        point_mig=True,
+        chrom=True,
+        nomig_prop = 1./40,
         mig_rate_bounds=[0,0.2],
         constrained_times=None,
         seed=123,
@@ -955,7 +957,8 @@ class DataBase:
         self.tree = tree
         self.edge_function = (edge_function or {})
         self.point_mig = point_mig
-        self.nomig_prop = 1./40
+        self.nomig_prop = nomig_prop
+        self.chrom = chrom
 
         ## database label combinations
         self.nedges = nedges
@@ -1375,7 +1378,8 @@ class DataBase:
                     ntests=self.ntests, 
                     theta=self.theta,
                     mig_rate_bounds=self.mig_rate_bounds,
-                    constrained_times=self.constrained_times)
+                    constrained_times=self.constrained_times,
+                    nomig_prop = self.nomig_prop)
 
                 ## (4) nreps: fill the same param values repeated times
                 mdict = model.test_values
@@ -1452,7 +1456,7 @@ class DataBase:
             	if (currround*num_engines + roundnum < njobs):
 	                job = jobs[currround*num_engines + roundnum]
 	                job_end = jobs[currround*num_engines + roundnum + 1]
-	                args = (self.database, job, job_end)
+	                args = (self.database, job, job_end, self.chrom)
 	                asyncs[job] = lbview.apply(Simulator, *args)
 
             ## wait for jobs to finish, catch results as they return and enter 

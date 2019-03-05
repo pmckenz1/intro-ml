@@ -582,7 +582,7 @@ class Simulator:
         self._mut = 1e-6
         self._recomb = 1e-6
         self._theta = None
-        self._length = 300000
+        self._length = 250000
 
         ## open view to the data
         with h5py.File(self.database, 'r') as io5:

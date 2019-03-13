@@ -579,10 +579,10 @@ class Simulator:
         self.chrom = chrom
 
         ## parameter transformations
-        self._mut = 1e-6
-        self._recomb = 1e-6
+        self._mut = 1e-8
+        self._recomb = 5e-9
         self._theta = None
-        self._length = 250000
+        self._length = 225000
 
         ## open view to the data
         with h5py.File(self.database, 'r') as io5:
@@ -1446,10 +1446,11 @@ class DataBase:
         #    asyncs[job] = lbview.apply(Simulator, *args)
 
         num_engines = len(self._ipcluster["pids"])
+	print("Number of engines: " + str(num_engines))
         #rounds = float(njobs)/float(num_engines) 
         rounds = int(njobs / num_engines) + (njobs % num_engines > 0) # round up
-
-        #print(rounds)
+	
+        print(rounds)
         for currround in range(rounds):
             #print(currround)
             for roundnum in range(num_engines):
@@ -1691,5 +1692,5 @@ def mutate_jc_fullmat(geno, ntips, nsnps):
             notinit = np.random.choice(allbases[allbases != init[0]])
             init[snp.astype(np.bool_)] = notinit
             snps[ridx] = init
-    return snps
+    return snps[(np.sum(snps,axis=1) > 0)]
 

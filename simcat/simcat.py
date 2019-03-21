@@ -53,7 +53,8 @@ class Model:
         mut=1e-8,
         mig_rate_bounds=[0,0.2],
         constrained_times=None,
-        nomig_prop=1./40
+        nomig_prop=1./40,
+        chrom=True,
         ):
         """
         An object used for demonstration and testing only. The real simulations
@@ -110,7 +111,11 @@ class Model:
         self._length = 1000
         self._mut = mut
         self._theta = np.random.uniform(self._rtheta[0], self._rtheta[1])
-        self.recombination_rate = 0
+        self._recomb = 0
+
+        # do we want to simulate a chromosome (snps linked, with recomb rate)
+        # or do we want unlinked SNPs?
+        self.chrom = chrom
 
         # dimension of simulations
         self.nsnps = nsnps
@@ -149,7 +154,9 @@ class Model:
         # It should a list of tuples, or list
         # of lists where each element has five values.
 
-        self.aedges = 0 # start number of interval admix edges
+        self.aedges = 0 # start total number of admix edges
+        self.p_aedges = 0 # start number of point admix edges
+        self.i_aedges = 0 # start number of interval admix edges
         #self.aedges = 0 # start number of point admix edges
         if interval_admix_edges:
             # single list or tuple: [a, b, c, d, e] or (a, b, c, d, e)
@@ -163,6 +170,7 @@ class Model:
                     "interval admixture events should each be a tuple with 5 values")
         self.interval_admix_edges = interval_admix_edges
         self.aedges += len(self.interval_admix_edges) # number of interval admix edges
+        self.i_aedges += len(self.interval_admix_edges) # number of interval admix edges
 
         if point_admix_edges:
             # single list or tuple: [a, b, c, d, e] or (a, b, c, d, e)
@@ -176,6 +184,7 @@ class Model:
                     "point admixture events should each be a tuple with 4 values")
         self.point_admix_edges = point_admix_edges
         self.aedges += len(self.point_admix_edges) # number of point admix edges
+        self.p_aedges += len(self.point_admix_edges) # number of point admix edges
 
         ## parameter constraints
         self.mig_rate_bounds = mig_rate_bounds
@@ -418,48 +427,50 @@ class Model:
                         file=sys.stderr)
 
         ## Add interval migration edges
-        for evt in range(self.aedges):
-            rate = self.test_values[evt]['mrates']
-            time = self.test_values[evt]['mtimes'][0] * 2. * self._Ne
+        if not self.i_aedges:
+            for evt in range(self.i_aedges):
+                rate = self.test_values[evt]['mrates']
+                time = self.test_values[evt]['mtimes'][0] * 2. * self._Ne
 
-            source, dest = self.interval_admix_edges[evt][:2]
+                source, dest = self.interval_admix_edges[evt][:2]
 
-            ## rename nodes at time of admix in case divergences renamed them
-            snode = self.tree.treenode.search_nodes(idx=source)[0]
-            dnode = self.tree.treenode.search_nodes(idx=dest)[0]
-            children = (snode._schild, dnode._schild)
-            demog.add(ms.MigrationRateChange(time[0], rate, children))
-            demog.add(ms.MigrationRateChange(time[1], 0, children))
-            if self._debug:
-                print(
-                    'demog mig:', 
-                    (time[0], time[1]), 
-                    round(rate, 4), 
-                    children,
-                    self._Ne, 
-                    file=sys.stderr,
-                    )
+                ## rename nodes at time of admix in case divergences renamed them
+                snode = self.tree.treenode.search_nodes(idx=source)[0]
+                dnode = self.tree.treenode.search_nodes(idx=dest)[0]
+                children = (snode._schild, dnode._schild)
+                demog.add(ms.MigrationRateChange(time[0], rate, children))
+                demog.add(ms.MigrationRateChange(time[1], 0, children))
+                if self._debug:
+                    print(
+                        'demog mig:', 
+                        (time[0], time[1]), 
+                        round(rate, 4), 
+                        children,
+                        self._Ne, 
+                        file=sys.stderr,
+                        )
 
         ## Add point admix events
-        for evt in range(self.aedges):
-            prop = self.test_values[evt]['mrates']
-            time = self.test_values[evt]['mtimes'][0] * 2. * self._Ne
+        if self.p_aedges:
+            for evt in range(self.p_aedges):
+                prop = self.test_values[evt]['mrates']
+                time = self.test_values[evt]['mtimes'][0] * 2. * self._Ne
 
-            source, dest = self.point_admix_edges[evt][:2]
+                source, dest = self.point_admix_edges[evt][:2]
 
-            ## rename nodes at time of admix in case divergences renamed them
-            snode = self.tree.treenode.search_nodes(idx=source)[0]
-            dnode = self.tree.treenode.search_nodes(idx=dest)[0]
-            children = (snode._schild, dnode._schild)
+                ## rename nodes at time of admix in case divergences renamed them
+                snode = self.tree.treenode.search_nodes(idx=source)[0]
+                dnode = self.tree.treenode.search_nodes(idx=dest)[0]
+                children = (snode._schild, dnode._schild)
 
-            demog.add(ms.MassMigration(time=time, 
-                source=children[0], 
-                destination=children[1], 
-                proportion=prop))
+                demog.add(ms.MassMigration(time=time, 
+                    source=children[0], 
+                    destination=children[1], 
+                    proportion=prop))
 
-            if self._debug:
-                print('demog div:', (int(time), source, dest), rount(prop,4), 
-                    file=sys.stderr)
+                if self._debug:
+                    print('demog div:', (int(time), source, dest), rount(prop,4), 
+                        file=sys.stderr)
 
         ## sort events by time
         demog = sorted(list(demog), key=lambda x: x.time)
@@ -509,6 +520,28 @@ class Model:
             population_configurations=self._get_popconfig(),
             demographic_events=self._get_demography()
         )
+
+        ## build msprime simulation
+        if self.chrom:
+            sim = ms.simulate(
+                length=self._length,                                      # optimize this
+                num_replicates=10000000,  
+                mutation_rate=self._mut,
+                recombination_rate=self._recomb,
+                migration_matrix=migmat,
+                population_configurations=self._get_popconfig(),  # just theta
+                demographic_events=self._get_demography(),         # node heights
+            )
+        if not self.chrom:
+            sim = ms.simulate(
+                length=1,                                      # optimize this
+                num_replicates=10000000,  
+                mutation_rate=self._mut,
+                recombination_rate=0,
+                migration_matrix=migmat,
+                population_configurations=self._get_popconfig(),  # just theta
+                demographic_events=self._get_demography(),         # node heights
+            )
         return sim
 
 

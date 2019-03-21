@@ -51,10 +51,12 @@ class Model:
         seed=None,
         debug=False,
         mut=1e-8,
+        recomb=0,
         mig_rate_bounds=[0,0.2],
-        constrained_times=None,
+        constrained_time_prop=None,
         nomig_prop=1./40,
         chrom=True,
+        length=1e5,
         ):
         """
         An object used for demonstration and testing only. The real simulations
@@ -108,10 +110,10 @@ class Model:
             self._rtheta = (min(theta), max(theta))
 
         # fixed _mut; _theta sampled from theta; and _Ne computed for diploid
-        self._length = 1000
+        self._length = length
         self._mut = mut
         self._theta = np.random.uniform(self._rtheta[0], self._rtheta[1])
-        self._recomb = 0
+        self._recomb = recomb
 
         # do we want to simulate a chromosome (snps linked, with recomb rate)
         # or do we want unlinked SNPs?
@@ -188,7 +190,7 @@ class Model:
 
         ## parameter constraints
         self.mig_rate_bounds = mig_rate_bounds
-        self.constrained_times = constrained_times
+        self.constrained_time_prop = constrained_time_prop
 
         ## generate migration parameters from the tree and admixture_edges
         ## stores data in memory as self.test_values as 'mrates' and 'mtimes'
@@ -264,14 +266,7 @@ class Model:
                 ## interval is stored as an int, and is bls in generations
                 ui = np.random.uniform(ival[0], ival[1], self.ntests * 2)
                 ui = ui.reshape((self.ntests, 2))
-                mtimes = np.sort(ui, axis=1)  
-                if self.constrained_times:
-                	for _ in range(self.constrained_times):
-	                	mtimes_constrained = np.zeros(mtimes.shape)
-	                	for idx, i in enumerate(mtimes):
-	                		mtimes_constrained[idx] = np.sort(np.random.uniform(low=i[0],
-	                			high=i[1],size=2))
-	                	mtimes = mtimes_constrained
+                mtimes = np.sort(ui, axis=1)
 
                 self.test_values[idx] = {
                     "mrates": mrates, 
@@ -325,7 +320,13 @@ class Model:
                 ival = intervals[(event[0], event[1])] #intervals[snode.idx, dnode.idx]
 
                 ## time is stored as an int, and is bls in generations
-                ui = np.random.uniform(ival[0], ival[1], self.ntests)
+                if self.constrained_time_prop:
+                    timediff = ival[1]-ival[0]
+                    ui = np.random.uniform(ival[0]+timediff*((1-self.constrained_time_prop)/2),
+                                        ival[1]-timediff*((1-self.constrained_time_prop)/2), 
+                                        self.ntests)
+                else:
+                    ui = np.random.uniform(ival[0], ival[1], self.ntests)
                 mtimes = ui
 
 
@@ -398,7 +399,7 @@ class Model:
 
 
     ## functions to build simulation options 
-    def _get_demography(self):
+    def _get_demography(self,idx):
         """
         returns demography scenario based on an input tree and admixture
         edge list with events in the format (source, dest, start, end, rate)
@@ -429,8 +430,8 @@ class Model:
         ## Add interval migration edges
         if not self.i_aedges:
             for evt in range(self.i_aedges):
-                rate = self.test_values[evt]['mrates']
-                time = self.test_values[evt]['mtimes'][0] * 2. * self._Ne
+                rate = self.test_values[evt]['mrates'][idx]
+                time = self.test_values[evt]['mtimes'][idx] * 2. * self._Ne
 
                 source, dest = self.interval_admix_edges[evt][:2]
 
@@ -453,8 +454,8 @@ class Model:
         ## Add point admix events
         if self.p_aedges:
             for evt in range(self.p_aedges):
-                prop = self.test_values[evt]['mrates']
-                time = self.test_values[evt]['mtimes'][0] * 2. * self._Ne
+                prop = self.test_values[evt]['mrates'][idx]
+                time = self.test_values[evt]['mtimes'][idx] * 2. * self._Ne
 
                 source, dest = self.point_admix_edges[evt][:2]
 
@@ -496,6 +497,7 @@ class Model:
         # Ne will be calculated from theta.
         migmat = np.zeros((self.ntips, self.ntips), dtype=int).tolist()
         self._theta = self.test_values["thetas"][idx]
+
         #self._mtimes = [self.test_values[evt]['mtimes'][idx] for evt in 
         #                range(len(self.admixture_edges))] 
         #self._mrates = [self.test_values[evt]['mrates'][idx] for evt in 
@@ -511,15 +513,6 @@ class Model:
         #    demographic_events=self._get_demography()
         #)
         ## build msprime simulation
-        sim = ms.simulate(
-            length=self._length,
-            num_replicates=1,  # 100X since some sims are empty
-            mutation_rate=self._mut,
-            recombination_rate=self.recombination_rate,
-            migration_matrix=migmat,
-            population_configurations=self._get_popconfig(),
-            demographic_events=self._get_demography()
-        )
 
         ## build msprime simulation
         if self.chrom:
@@ -530,7 +523,7 @@ class Model:
                 recombination_rate=self._recomb,
                 migration_matrix=migmat,
                 population_configurations=self._get_popconfig(),  # just theta
-                demographic_events=self._get_demography(),         # node heights
+                demographic_events=self._get_demography(idx),         # node heights
             )
         if not self.chrom:
             sim = ms.simulate(
@@ -540,8 +533,9 @@ class Model:
                 recombination_rate=0,
                 migration_matrix=migmat,
                 population_configurations=self._get_popconfig(),  # just theta
-                demographic_events=self._get_demography(),         # node heights
+                demographic_events=self._get_demography(idx),         # node heights
             )
+
         return sim
 
 
@@ -557,22 +551,34 @@ class Model:
             ## we select 1 SNP from each tree with shape (1, ntaxa)
             ## repeat until snparr is full with shape (nsnps, ntips)
             for rep in range(self.nreps):
-                sims = self._simulate(ridx)
+                generate_sims = self._simulate(ridx)
+                ##########
+                ##########
+                ##########
+                if self.chrom:
+                    geno_mat = next(generate_sims).genotype_matrix()
+                    bingenos = geno_mat
 
-                ## store results (nsnps, ntips); def. 1000 SNPs
-                snparr = np.zeros((self.nsnps, self.ntips), dtype=np.int32)
+                else:
+                    snpcounter = 0
+                    bingenos = np.zeros((self.nsnps,4),dtype=np.int8)
+                    while snpcounter < self.nsnps:
+                        #newsim = next(generate_sims)
+                        geno_mat = next(generate_sims).genotype_matrix()
+                        #print(geno_mat)
+                        #print(snpcounter)
+                        if len(geno_mat):
+                            bingenos[snpcounter] = geno_mat[0]
+                            snpcounter += 1
 
-                ## continue until all SNPs are sampled from generator
-                fidx = 0
-                while fidx < self.nsnps:
-                    ## get genotypes and convert to {0,1,2,3} under JC
-                    bingenos = next(sims).genotype_matrix()
+                #sim = self._simulate(idx)
 
-                    ## count as 16x16 matrix and store to snparr
-                    if bingenos.size:
-                        sitegenos = mutate_jc(bingenos, self.ntips)
-                        snparr[fidx] = sitegenos
-                        fidx += 1
+                ## get genotypes and convert to {0,1,2,3} under JC
+                #bingenos = next(sims).genotype_matrix()
+
+                ## count as 16x16 matrix and store to snparr
+                ## snparr is trimmed down to size = nsnps
+                snparr = mutate_jc_fullmat(bingenos, self.ntips, self.nsnps)
 
                 ## keep track for counts index
                 quartidx = 0
@@ -582,11 +588,10 @@ class Model:
                 for currquart in qiter:
                     ## cols indices match tip labels b/c we named tips node.idx
                     quartsnps = snparr[:, currquart]
+
                     self.counts[gidx, quartidx] = count_matrix_float(quartsnps)
                     quartidx += 1
 
-                # scale by max count for this rep
-                self.counts[gidx, ...] /= self.counts[gidx, ...].max()
                 gidx += 1
 
 
@@ -944,6 +949,12 @@ class DataBase:
     theta: int or tuple (default=0.01)
         The mutation parameter (2*Ne*u), or range of values from which values
         will be uniformly drawn across ntests. 
+    
+    constrained_time_prop: float (between 0 and 1)
+        The proportion of the POSSIBLE interval for introgression between two 
+        branches that is allowed to be sampled. So if a possible edge exists
+        between times 100 and 200, a constrained_time_prop of .8 would allow 
+        introgression to only happen between 110 and 190.
 
     seed: int (default=123)
         Set the seed of the random number generator
@@ -967,7 +978,7 @@ class DataBase:
         chrom=True,
         nomig_prop = 1./40,
         mig_rate_bounds=[0,0.2],
-        constrained_times=None,
+        constrained_time_prop=None,
         seed=123,
         force=False,
         debug=False,
@@ -1003,7 +1014,7 @@ class DataBase:
 
         ## constraints on parameter sampling
         self.mig_rate_bounds = mig_rate_bounds
-        self.constrained_times = constrained_times
+        self.constrained_time_prop = constrained_time_prop
 
         ## decide on an appropriate chunksize to keep memory load reasonable
         self.chunksize = 1000
@@ -1411,7 +1422,7 @@ class DataBase:
                     ntests=self.ntests, 
                     theta=self.theta,
                     mig_rate_bounds=self.mig_rate_bounds,
-                    constrained_times=self.constrained_times,
+                    constrained_time_prop=self.constrained_time_prop,
                     nomig_prop = self.nomig_prop)
 
                 ## (4) nreps: fill the same param values repeated times
